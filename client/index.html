@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <base href="./" />
+  <link rel="icon" type="image/svg+xml" href="./vite.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pantalla de Cirugía</title>
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#0ea5e9" />
+  <script>
+    // Sistema de logs para depuración en dispositivo
+    window.logDebug = function (msg) {
+      console.log("[DEBUG] " + msg);
+      // Opcional: Podríamos mostrar esto en un elemento flotante si es necesario
+    };
+
+    window.onerror = function (msg, url, line, col, error) {
+      var errorMsg = "Error: " + msg + "\nURL: " + url + "\nLínea: " + line + ":" + col;
+      if (error && error.stack) errorMsg += "\nStack: " + error.stack;
+      alert("CRASH DETECTADO:\n" + errorMsg);
+      return false;
+    };
+
+    window.addEventListener('unhandledrejection', function (event) {
+      alert("PROMESA FALLIDA: " + event.reason);
+    });
+
+    window.logDebug("Index load start. Protocol: " + window.location.protocol);
+  </script>
+</head>
+
+<body style="background-color: #ffff00;">
+  <div id="root">
+    <div style="padding: 20px; font-family: sans-serif; text-align: center;">
+      <h1>⏳ CARGANDO APLICACIÓN...</h1>
+      <p>Si ves esto por más de 5 segundos, algo falló después de cargar el HTML.</p>
+    </div>
+  </div>
+  <!-- Fallback if root remains containing ONLY the loading text (meaning React didn't replace it) or is empty -->
+  <script>
+    setTimeout(function () {
+      var root = document.getElementById('root');
+      // Check if content is still the initial loading text
+      if (root && (root.innerHTML.includes("CARGANDO APLICACIÓN") || root.innerHTML === "")) {
+        document.body.style.backgroundColor = "white"; // Reset bg
+        root.innerHTML = '<div style="padding: 20px; color: white; background: #821; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-family: sans-serif;">' +
+          '<h2>⚠️ Error de Inicio (CRITICO)</h2>' +
+          '<p>El sistema no pudo iniciar React.</p>' +
+          '<p>Protocolo: ' + window.location.protocol + '</p>' +
+          '<p>URL: ' + window.location.href + '</p>' +
+          '<button onclick="window.location.reload()" style="padding: 10px 20px; margin-top: 20px;">REINTENTAR</button>' +
+          '</div>';
+      }
+    }, 5000);
+  </script>
+  <script type="module" src="./src/main.jsx"></script>
+  <script>
+    if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(reg => console.log('SW OK'))
+          .catch(err => console.warn('SW FAIL', err));
+      });
+    }
+  </script>
+</body>
+
+</html>

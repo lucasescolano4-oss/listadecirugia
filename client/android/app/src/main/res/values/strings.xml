@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">CirugiaApp</string>
+    <string name="title_activity_main">CirugiaApp</string>
+    <string name="package_name">com.cirugia.app</string>
+    <string name="custom_url_scheme">com.cirugia.app</string>
+</resources>
