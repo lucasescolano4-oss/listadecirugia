@@ -24,7 +24,10 @@ function getInitialURL() {
   try {
     // 1. Check for manual override in localStorage first (for both Web and Mobile)
     const stored = getStoredIP();
-    if (stored) return `http://${stored}:3000`;
+    if (stored) {
+      // If stored doesn't have protocol, assume http (unless on https, then we have a problem, but let's try)
+      return stored.startsWith('http') ? stored : `http://${stored}:3000`;
+    }
 
     // 2. If environment variable is set (build time)
     if (import.meta.env.VITE_SERVER_URL) {
@@ -33,11 +36,19 @@ function getInitialURL() {
 
     // 3. If standard web (localhost), try to use the same hostname
     const hostname = window.location.hostname;
+    // Allow http for localhost
     if (!isMobile && (hostname === 'localhost' || hostname === '127.0.0.1')) {
-      return `http://${hostname}:3000`; // Local development assumption
+      return `http://${hostname}:3000`;
     }
 
-    // 4. Default fallback
+    // 4. HTTPS Safety Check
+    if (window.location.protocol === 'https:') {
+      console.warn("HTTPS detected but no VITE_SERVER_URL found. WebSocket might fail.");
+      // Return null to allow App to ask user, instead of crashing on Mixed Content
+      return null;
+    }
+
+    // 5. Default fallback for HTTP/Native
     return `http://${DEFAULT_PC_IP}:3000`;
   } catch (e) {
     return `http://${DEFAULT_PC_IP}:3000`;
@@ -53,6 +64,20 @@ function initSocket() {
   try {
     const url = getInitialURL();
     console.log("Initializing socket to:", url);
+
+    if (!url) {
+      console.warn("No socket URL determined. Waiting for user input.");
+      // Valid dummy socket that is disconnected
+      socket = {
+        on: () => { },
+        off: () => { },
+        emit: () => { },
+        connect: () => { },
+        connected: false
+      };
+      return socket;
+    }
+
     socket = io(url, {
       reconnectionAttempts: 5,
       timeout: 10000,
