@@ -153,6 +153,9 @@ function App() {
   const [initError, setInitError] = useState(null);
 
   useEffect(() => {
+    // Clear initial loading styles
+    document.body.style.backgroundColor = '';
+
     try {
       const handlePatientsUpdate = (data) => {
         setPatients(data || []);
