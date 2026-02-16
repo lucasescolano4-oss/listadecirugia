@@ -136,12 +136,12 @@ tr:hover {
 }
 
 .main-name {
-  font-size: 7.6vw;
+  font-size: 9vw;
   font-weight: 900;
   line-height: 1;
   margin-bottom: 2vh;
-  color: #FFFF00;
-  text-shadow: 0 0 20px rgba(255, 255, 0, 0.2);
+  color: #ffffff;
+  text-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
 }
 
 .sub-large-container {
@@ -150,15 +150,15 @@ tr:hover {
 }
 
 .sub-large {
-  font-size: 6.8vw;
+  font-size: 8vw;
   font-weight: 700;
-  color: #FFFF00;
-  /* Yellow for LIO */
+  color: #38bdf8;
+  /* Cyan for LIO */
 }
 
 .highlight-ojo {
-  color: #FFFF00;
-  /* Yellow for OJO */
+  color: #00ff00;
+  /* Green for OJO */
 }
 
 /* Middle Section: Edad, Cata, Dil (Medium) */
@@ -170,9 +170,9 @@ tr:hover {
 }
 
 .val-medium {
-  font-size: 5.1vw;
+  font-size: 6vw;
   font-weight: 700;
-  color: #FFFF00;
+  color: #ffcc00;
 }
 
 /* Bottom Section: OS, APP (Small) */
@@ -184,9 +184,9 @@ tr:hover {
 }
 
 .val-small {
-  font-size: 3vw;
+  font-size: 3.5vw;
   font-weight: 600;
-  color: #FFFF00;
+  color: #e2e8f0;
 }
 
 .data-item {
@@ -197,9 +197,8 @@ tr:hover {
 }
 
 .label {
-  font-size: 0.5em;
-  color: #FFFFFF;
-  opacity: 0.9;
+  font-size: 0.4em;
+  opacity: 0.6;
   text-transform: uppercase;
   margin-bottom: 0.5vh;
   letter-spacing: 0.1em;
