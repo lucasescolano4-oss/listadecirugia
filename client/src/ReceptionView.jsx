@@ -173,6 +173,7 @@ function ReceptionView({ socket, patients, activePatient, history }) {
                         <tr>
                             <th>Acción</th>
                             <th>NOMBRE Y APELLIDO</th>
+                            <th>HORA</th>
                             <th>OJO</th>
                             <th>LIO</th>
                             <th>EDAD</th>
@@ -215,6 +216,7 @@ function ReceptionView({ socket, patients, activePatient, history }) {
                                         )}
                                     </td>
                                     <td>{p['NOMBRE Y APELLIDO']}</td>
+                                    <td>{p['HORA']}</td>
                                     <td onClick={(e) => e.stopPropagation()}>
                                         <select
                                             value={p['OJO'] ? String(p['OJO']).toUpperCase().trim() : ''}

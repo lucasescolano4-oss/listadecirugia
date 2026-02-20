@@ -114,7 +114,7 @@ function SurgeryView({ socket, activePatient }) {
             <div className="section-small">
                 <div className="data-item">
                     <span className="label">OBRA SOCIAL</span>
-                    <span className="val-small">{os}</span>
+                    <span className="val-small">{os} <span style={{ marginLeft: '15px', color: '#666' }}>N°: {patient['N°'] || '-'}</span></span>
                 </div>
                 <div className="data-item">
                     <span className="label">ANTECEDENTES (APP)</span>
