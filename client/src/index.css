@@ -136,7 +136,7 @@ tr:hover {
 }
 
 .main-name {
-  font-size: 7.6vw;
+  font-size: 6.5vw;
   font-weight: 900;
   line-height: 1;
   margin-bottom: 2vh;
@@ -150,7 +150,7 @@ tr:hover {
 }
 
 .sub-large {
-  font-size: 6.8vw;
+  font-size: 5.8vw;
   font-weight: 700;
   color: #FFFF00;
   /* Yellow for LIO */
@@ -170,7 +170,7 @@ tr:hover {
 }
 
 .val-medium {
-  font-size: 5.1vw;
+  font-size: 4.3vw;
   font-weight: 700;
   color: #FFFF00;
 }
@@ -184,7 +184,7 @@ tr:hover {
 }
 
 .val-small {
-  font-size: 3vw;
+  font-size: 2.55vw;
   font-weight: 600;
   color: #FFFF00;
 }
@@ -197,7 +197,7 @@ tr:hover {
 }
 
 .label {
-  font-size: 0.5em;
+  font-size: 0.58em;
   color: #FFFFFF;
   opacity: 0.9;
   text-transform: uppercase;
