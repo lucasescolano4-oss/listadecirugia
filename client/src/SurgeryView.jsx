@@ -4,42 +4,27 @@ function SurgeryView({ socket, activePatient }) {
     const patient = activePatient;
 
     useEffect(() => {
-        // Activar modo cirugía en el body
         document.body.classList.add('surgery-mode');
-
-        return () => {
-            document.body.classList.remove('surgery-mode');
-        };
+        return () => document.body.classList.remove('surgery-mode');
     }, []);
 
     const [timer, setTimer] = useState(0);
-    const [isActive, setIsActive] = useState(false);
 
     useEffect(() => {
         let interval = null;
 
-        const updateTimer = () => {
-            if (patient && patient.startTime) {
+        if (patient && patient.startTime) {
+            const updateTimer = () => {
                 const start = new Date(patient.startTime).getTime();
-                const now = new Date().getTime();
-                setTimer(Math.max(0, Math.floor((now - start) / 1000)));
-            } else {
-                setTimer(0);
-            }
-        };
-
-        if (patient) {
+                setTimer(Math.max(0, Math.floor((Date.now() - start) / 1000)));
+            };
             updateTimer();
-            setIsActive(true);
             interval = setInterval(updateTimer, 1000);
         } else {
-            setIsActive(false);
             setTimer(0);
         }
 
-        return () => {
-            if (interval) clearInterval(interval);
-        };
+        return () => { if (interval) clearInterval(interval); };
     }, [patient]);
 
     const formatTime = (seconds) => {
@@ -50,7 +35,7 @@ function SurgeryView({ socket, activePatient }) {
     };
 
     const handleFinish = () => {
-        if (window.confirm("¿Está seguro de finalizar la cirugía actual?")) {
+        if (window.confirm('¿Está seguro de finalizar la cirugía actual?')) {
             socket.emit('clear_patient');
         }
     };
@@ -60,26 +45,26 @@ function SurgeryView({ socket, activePatient }) {
             <div className="waiting-screen">
                 <div className="waiting-content">
                     <span className="waiting-icon">🏥</span>
-                    <p>ESPERANDO DATOS...</p>
+                    <p>ESPERANDO DATOS…</p>
                     <small>Sistema de Monitoreo de Quirófano</small>
                 </div>
             </div>
         );
     }
 
-    // Desestructuración segura
     const nombre = patient['NOMBRE Y APELLIDO'] || '-';
-    const ojo = patient['OJO'] || '-';
-    const lio = patient['LIO'] || '-';
-    const edad = patient['EDAD'] || '-';
-    const cata = patient['CATA'] || '-';
-    const dil = patient['DIL'] || '-';
-    const os = patient['OS'] || '-';
-    const app = patient['APP'] || '-';
+    const ojo    = patient['OJO']               || '-';
+    const lio    = patient['LIO']               || '-';
+    const edad   = patient['EDAD']              || '-';
+    const cata   = patient['CATA']              || '-';
+    const dil    = patient['DIL']               || '-';
+    const os     = patient['OS']                || '-';
+    const app    = patient['APP']               || '-';
+    const nro    = patient['N°']                || '-';
 
     return (
         <div className="surgery-grid">
-            {/* SECCIÓN SUPERIOR: GRANDE */}
+            {/* SECCIÓN SUPERIOR: nombre, ojo, lio */}
             <div className="section-large">
                 <div className="main-name">{nombre}</div>
                 <div className="sub-large-container">
@@ -94,7 +79,7 @@ function SurgeryView({ socket, activePatient }) {
                 </div>
             </div>
 
-            {/* SECCIÓN MEDIA: MEDIANO */}
+            {/* SECCIÓN MEDIA: edad, cata, dil */}
             <div className="section-medium">
                 <div className="data-item">
                     <span className="label">EDAD</span>
@@ -110,11 +95,14 @@ function SurgeryView({ socket, activePatient }) {
                 </div>
             </div>
 
-            {/* SECCIÓN INFERIOR: PEQUEÑO */}
+            {/* SECCIÓN INFERIOR: obra social, antecedentes */}
             <div className="section-small">
                 <div className="data-item">
                     <span className="label">OBRA SOCIAL</span>
-                    <span className="val-small">{os} <span style={{ marginLeft: '15px', color: '#666' }}>N°: {patient['N°'] || '-'}</span></span>
+                    <span className="val-small">
+                        {os}
+                        <span style={{ marginLeft: '15px', color: '#666' }}>N°: {nro}</span>
+                    </span>
                 </div>
                 <div className="data-item">
                     <span className="label">ANTECEDENTES (APP)</span>
@@ -122,19 +110,15 @@ function SurgeryView({ socket, activePatient }) {
                 </div>
             </div>
 
-            {/* FOOTER: BOTÓNIZQUIERDA, TIMER CENTRO */}
+            {/* FOOTER: botón finalizar + timer */}
             <div className="surgery-footer">
                 <div className="footer-left">
                     <button className="finish-button" onClick={handleFinish}>FINALIZAR</button>
                 </div>
-
                 <div className="timer-container">
                     <div className="timer">{formatTime(timer)}</div>
                 </div>
-
-                <div className="footer-right-spacer">
-                    {/* El reloj global se posicionará aquí vía CSS */}
-                </div>
+                <div /> {/* spacer para que el reloj global quede a la derecha */}
             </div>
         </div>
     );
