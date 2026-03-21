@@ -166,6 +166,18 @@ io.on('connection', (socket) => {
         io.emit('patients_update', currentPatientList);
     });
 
+    // ── NUEVA JORNADA: borra todo el estado ──────────────────────────────────
+    socket.on('reset_all', () => {
+        console.log('Nueva jornada — limpiando todo el estado');
+        currentPatient     = null;
+        history            = [];
+        currentPatientList = [];
+        persist();
+        io.emit('update_patient',  null);
+        io.emit('history_update',  []);
+        io.emit('patients_update', []);
+    });
+
     // Eliminar item(s) del historial y restaurar en lista
     socket.on('delete_history_item', (idOrIds) => {
         const idsToDelete = Array.isArray(idOrIds) ? idOrIds : [idOrIds];

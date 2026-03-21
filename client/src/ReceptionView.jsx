@@ -44,6 +44,14 @@ function ReceptionView({ socket, patients, activePatient, history }) {
         setFilteredPatients(list);
     }, [patients, searchTerm, hideCompleted, surgeryHistory]);
 
+    // ── Nueva Jornada ─────────────────────────────────────────────────────────
+    const handleResetAll = () => {
+        if (!window.confirm(
+            '⚠️ NUEVA JORNADA\n\nEsto va a borrar:\n• La lista de pacientes\n• El paciente en pantalla\n• Todo el historial\n\n¿Confirmar?'
+        )) return;
+        socket.emit('reset_all');
+    };
+
     // ── Cargar Excel ──────────────────────────────────────────────────────────
     const handleFileUpload = (e) => {
         const file = e.target.files[0];
@@ -131,7 +139,27 @@ function ReceptionView({ socket, patients, activePatient, history }) {
     // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div className="reception-container">
-            <h1>Panel de Control — Recepción</h1>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                <h1 style={{ margin: 0 }}>Panel de Control — Recepción</h1>
+                <button
+                    onClick={handleResetAll}
+                    style={{
+                        padding: '10px 20px',
+                        fontSize: '0.95rem',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                        backgroundColor: '#dc2626',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                    }}
+                >
+                    🗑️ NUEVA JORNADA
+                </button>
+            </div>
 
             <div className="upload-section">
                 <label>
