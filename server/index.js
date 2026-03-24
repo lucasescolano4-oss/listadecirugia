@@ -9,206 +9,183 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Health check para Render (evita que el servicio duerma)
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 const server = http.createServer(app);
 
-// En producción (Render), el cliente viene de Vercel — permitir ese origen
 const allowedOrigins = process.env.CLIENT_URL
     ? [process.env.CLIENT_URL, 'http://localhost:5173']
     : '*';
 
 const io = new Server(server, {
-    cors: {
-        origin: allowedOrigins,
-        methods: ['GET', 'POST']
-    },
-    // Importante para Render: permite WebSocket con fallback a polling
+    cors: { origin: allowedOrigins, methods: ['GET', 'POST'] },
     transports: ['websocket', 'polling'],
     pingTimeout: 60000,
     pingInterval: 25000
 });
 
-// ── Persistencia ──────────────────────────────────────────────────────────────
+// Persistencia
 const DATA_FILE = path.join(__dirname, 'data.json');
 
 function loadData() {
     try {
-        if (fs.existsSync(DATA_FILE)) {
-            const raw = fs.readFileSync(DATA_FILE, 'utf8');
-            return JSON.parse(raw);
-        }
-    } catch (err) {
-        console.error('Error al cargar data.json:', err);
-    }
-    return { currentPatient: null, history: [], currentPatientList: [] };
+        if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    } catch (err) { console.error('Error al cargar data.json:', err); }
+    return {};
 }
 
 function saveData(data) {
-    try {
-        fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-    } catch (err) {
-        console.error('Error al guardar data.json:', err);
-    }
+    try { fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2)); }
+    catch (err) { console.error('Error al guardar data.json:', err); }
 }
 
 function ensureIds(list) {
-    return (list || []).map((p, i) => ({
-        ...p,
-        _id: p._id || `gen-${Date.now()}-${i}`
-    }));
+    return (list || []).map((p, i) => ({ ...p, _id: p._id || `gen-${Date.now()}-${i}` }));
 }
 
-// Estado inicial
-const initialState = loadData();
-let currentPatient    = initialState.currentPatient    || null;
-let history           = initialState.history           || [];
-let currentPatientList = ensureIds(initialState.currentPatientList);
-
-function persist() {
-    saveData({ currentPatient, history, currentPatientList });
+function emptyRoom() {
+    return { currentPatient: null, history: [], currentPatientList: [] };
 }
 
-// ── Socket events ─────────────────────────────────────────────────────────────
+// Estado: un objeto por quirofano { q1: {...}, q2: {...} }
+let rooms = loadData();
+
+function getRoom(roomId) {
+    if (!rooms[roomId]) rooms[roomId] = emptyRoom();
+    rooms[roomId].currentPatientList = ensureIds(rooms[roomId].currentPatientList);
+    return rooms[roomId];
+}
+
+function getRoomId(socket) {
+    const r = Array.from(socket.rooms).filter(r => r !== socket.id);
+    return r[0] || null;
+}
+
+function persist() { saveData(rooms); }
+
 io.on('connection', (socket) => {
     console.log('Cliente conectado:', socket.id);
 
-    // Enviar estado actual al cliente que se acaba de conectar
-    socket.emit('update_patient',  currentPatient);
-    socket.emit('history_update',  history);
-    socket.emit('patients_update', currentPatientList);
+    socket.on('join_room', (roomId) => {
+        Array.from(socket.rooms)
+            .filter(r => r !== socket.id)
+            .forEach(r => socket.leave(r));
+        socket.join(roomId);
+        console.log(`Socket ${socket.id} unido a sala: ${roomId}`);
+        const room = getRoom(roomId);
+        socket.emit('update_patient',  room.currentPatient);
+        socket.emit('history_update',  room.history);
+        socket.emit('patients_update', room.currentPatientList);
+    });
 
-    // Cargar lista completa desde Excel
     socket.on('upload_patients', (data) => {
-        if (!Array.isArray(data)) return;
-        currentPatientList = ensureIds(data);
+        const roomId = getRoomId(socket);
+        if (!roomId || !Array.isArray(data)) return;
+        const room = getRoom(roomId);
+        room.currentPatientList = ensureIds(data);
         persist();
-        io.emit('patients_update', currentPatientList);
+        io.to(roomId).emit('patients_update', room.currentPatientList);
     });
 
-    // Solicitar lista (al recargar una pestaña)
     socket.on('request_patients', () => {
-        socket.emit('patients_update', currentPatientList);
-        socket.emit('history_update',  history);
-        socket.emit('update_patient',  currentPatient);
+        const roomId = getRoomId(socket);
+        if (!roomId) return;
+        const room = getRoom(roomId);
+        socket.emit('patients_update', room.currentPatientList);
+        socket.emit('history_update',  room.history);
+        socket.emit('update_patient',  room.currentPatient);
     });
 
-    // Editar un paciente de la lista (ej: cambiar OJO)
     socket.on('update_patient_in_list', (updatedPatient) => {
-        if (!updatedPatient || !updatedPatient._id) return;
-
-        currentPatientList = currentPatientList.map(p =>
+        const roomId = getRoomId(socket);
+        if (!roomId || !updatedPatient || !updatedPatient._id) return;
+        const room = getRoom(roomId);
+        room.currentPatientList = room.currentPatientList.map(p =>
             p._id === updatedPatient._id ? updatedPatient : p
         );
-
-        // Si es el paciente activo, sincronizar pantalla quirófano también
-        if (currentPatient && currentPatient._id === updatedPatient._id) {
-            currentPatient = { ...currentPatient, ...updatedPatient };
-            io.emit('update_patient', currentPatient);
+        if (room.currentPatient && room.currentPatient._id === updatedPatient._id) {
+            room.currentPatient = { ...room.currentPatient, ...updatedPatient };
+            io.to(roomId).emit('update_patient', room.currentPatient);
         }
-
         persist();
-        io.emit('patients_update', currentPatientList);
+        io.to(roomId).emit('patients_update', room.currentPatientList);
     });
 
-    // Proyectar paciente en pantalla quirófano
     socket.on('update_patient', (patientData) => {
-        if (!patientData) {
-            currentPatient = null;
-        } else {
-            currentPatient = {
-                ...patientData,
-                startTime: new Date().toISOString()
-            };
-            console.log('Proyectando:', currentPatient['NOMBRE Y APELLIDO']);
-        }
+        const roomId = getRoomId(socket);
+        if (!roomId) return;
+        const room = getRoom(roomId);
+        room.currentPatient = patientData
+            ? { ...patientData, startTime: new Date().toISOString() }
+            : null;
+        if (patientData) console.log(`[${roomId}] Proyectando:`, patientData['NOMBRE Y APELLIDO']);
         persist();
-        io.emit('update_patient', currentPatient);
+        io.to(roomId).emit('update_patient', room.currentPatient);
     });
 
-    // Finalizar cirugía — mueve al historial y elimina de la lista
     socket.on('clear_patient', () => {
-        if (currentPatient) {
-            console.log('Finalizando cirugía:', currentPatient['NOMBRE Y APELLIDO']);
-
+        const roomId = getRoomId(socket);
+        if (!roomId) return;
+        const room = getRoom(roomId);
+        if (room.currentPatient) {
             const endTime   = new Date();
-            const startTime = new Date(currentPatient.startTime || endTime);
-            const durationMs = endTime - startTime;
-            const totalSecs  = Math.floor(durationMs / 1000);
+            const startTime = new Date(room.currentPatient.startTime || endTime);
+            const totalSecs = Math.floor((endTime - startTime) / 1000);
             const hh = Math.floor(totalSecs / 3600).toString().padStart(2, '0');
             const mm = Math.floor((totalSecs % 3600) / 60).toString().padStart(2, '0');
             const ss = (totalSecs % 60).toString().padStart(2, '0');
-
-            history.push({
-                ...currentPatient,
+            room.history.push({
+                ...room.currentPatient,
                 historyId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                 endTime:   endTime.toISOString(),
                 duration:  `${hh}:${mm}:${ss}`
             });
-
-            // Eliminar de la lista por _id (fallback: nombre + DNI)
-            currentPatientList = currentPatientList.filter(p => {
-                if (currentPatient._id && p._id) return p._id !== currentPatient._id;
-                return !(
-                    p['NOMBRE Y APELLIDO'] === currentPatient['NOMBRE Y APELLIDO'] &&
-                    p['DNI'] === currentPatient['DNI']
-                );
+            room.currentPatientList = room.currentPatientList.filter(p => {
+                if (room.currentPatient._id && p._id) return p._id !== room.currentPatient._id;
+                return !(p['NOMBRE Y APELLIDO'] === room.currentPatient['NOMBRE Y APELLIDO'] && p['DNI'] === room.currentPatient['DNI']);
             });
         }
-
-        currentPatient = null;
+        room.currentPatient = null;
         persist();
-        io.emit('update_patient',  null);
-        io.emit('history_update',  history);
-        io.emit('patients_update', currentPatientList);
+        io.to(roomId).emit('update_patient',  null);
+        io.to(roomId).emit('history_update',  room.history);
+        io.to(roomId).emit('patients_update', room.currentPatientList);
     });
 
-    // ── NUEVA JORNADA: borra todo el estado ──────────────────────────────────
     socket.on('reset_all', () => {
-        console.log('Nueva jornada — limpiando todo el estado');
-        currentPatient     = null;
-        history            = [];
-        currentPatientList = [];
+        const roomId = getRoomId(socket);
+        if (!roomId) return;
+        console.log(`[${roomId}] Nueva jornada`);
+        rooms[roomId] = emptyRoom();
         persist();
-        io.emit('update_patient',  null);
-        io.emit('history_update',  []);
-        io.emit('patients_update', []);
+        io.to(roomId).emit('update_patient',  null);
+        io.to(roomId).emit('history_update',  []);
+        io.to(roomId).emit('patients_update', []);
     });
 
-    // Eliminar item(s) del historial y restaurar en lista
     socket.on('delete_history_item', (idOrIds) => {
-        const idsToDelete = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
-
-        const itemsToRestore = history.filter(item => idsToDelete.includes(item.historyId));
-        history = history.filter(item => !idsToDelete.includes(item.historyId));
-
-        itemsToRestore.forEach(item => {
-            const { historyId, endTime, duration, startTime, ...patientData } = item;
-            const alreadyExists = currentPatientList.some(p =>
-                p._id === patientData._id ||
-                (p['NOMBRE Y APELLIDO'] === patientData['NOMBRE Y APELLIDO'] &&
-                 p['DNI'] === patientData['DNI'])
+        const roomId = getRoomId(socket);
+        if (!roomId) return;
+        const room = getRoom(roomId);
+        const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+        const toRestore = room.history.filter(i => ids.includes(i.historyId));
+        room.history = room.history.filter(i => !ids.includes(i.historyId));
+        toRestore.forEach(item => {
+            const { historyId, endTime, duration, startTime, ...p } = item;
+            const exists = room.currentPatientList.some(x =>
+                x._id === p._id || (x['NOMBRE Y APELLIDO'] === p['NOMBRE Y APELLIDO'] && x['DNI'] === p['DNI'])
             );
-            if (!alreadyExists) {
-                currentPatientList.push(patientData);
-            }
+            if (!exists) room.currentPatientList.push(p);
         });
-
         persist();
-        io.emit('history_update',  history);
-        io.emit('patients_update', currentPatientList);
+        io.to(roomId).emit('history_update',  room.history);
+        io.to(roomId).emit('patients_update', room.currentPatientList);
     });
 
-    socket.on('disconnect', () => {
-        console.log('Cliente desconectado:', socket.id);
-    });
+    socket.on('disconnect', () => console.log('Desconectado:', socket.id));
 });
 
-// ── Iniciar servidor ──────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Servidor escuchando en puerto ${PORT}`);
-});
+server.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT}`));
