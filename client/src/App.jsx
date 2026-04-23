@@ -7,7 +7,6 @@ import Clock from './Clock';
 import HistoryView from './HistoryView';
 import RoomSelector, { QUIROFANOS } from './RoomSelector';
 
-// ── URL del servidor ──────────────────────────────────────────────────────────
 function getServerURL() {
     if (import.meta.env.VITE_SERVER_URL) return import.meta.env.VITE_SERVER_URL;
     try {
@@ -28,7 +27,6 @@ const socket = io(serverURL, {
     transports: ['websocket', 'polling']
 });
 
-// ── Navegación ────────────────────────────────────────────────────────────────
 function Navigation({ quirofano, onChangeRoom }) {
     const [connected, setConnected] = useState(socket.connected);
 
@@ -80,9 +78,7 @@ function Navigation({ quirofano, onChangeRoom }) {
                 onClick={onChangeRoom}
                 className="nav-item no-print"
                 style={{
-                    background: 'none',
-                    border: 'none',
-                    cursor: 'pointer',
+                    background: 'none', border: 'none', cursor: 'pointer',
                     borderLeft: `3px solid ${quirofano?.color || '#0ea5e9'}`,
                     paddingLeft: '8px'
                 }}
@@ -96,7 +92,6 @@ function Navigation({ quirofano, onChangeRoom }) {
     );
 }
 
-// ── App ───────────────────────────────────────────────────────────────────────
 function App() {
     const [quirofano, setQuirofano] = useState(() => {
         try {
@@ -128,6 +123,14 @@ function App() {
         setHistory([]);
     };
 
+    // Ping cada 10 minutos para mantener Render despierto
+    useEffect(() => {
+        const ping = () => fetch(`${serverURL}/health`).catch(() => {});
+        ping();
+        const interval = setInterval(ping, 10 * 60 * 1000);
+        return () => clearInterval(interval);
+    }, []);
+
     // Unirse a la sala al reconectar
     useEffect(() => {
         if (!quirofano) return;
@@ -141,16 +144,13 @@ function App() {
     useEffect(() => {
         if (!quirofano) return;
         document.body.style.backgroundColor = '';
-
         try {
             const handlePatientsUpdate = (data) => setPatients(data || []);
             const handleActivePatient  = (data) => setActivePatient(data);
             const handleHistoryUpdate  = (data) => setHistory(data || []);
-
             socket.on('patients_update', handlePatientsUpdate);
             socket.on('update_patient',  handleActivePatient);
             socket.on('history_update',  handleHistoryUpdate);
-
             return () => {
                 socket.off('patients_update', handlePatientsUpdate);
                 socket.off('update_patient',  handleActivePatient);
@@ -178,14 +178,9 @@ function App() {
             <div className="app-container">
                 <div className="no-print" style={{
                     position: 'fixed', top: 0, left: 0,
-                    background: quirofano.color,
-                    color: 'white',
-                    padding: '3px 12px',
-                    fontSize: '0.75rem',
-                    fontWeight: '700',
-                    borderBottomRightRadius: '8px',
-                    zIndex: 9998,
-                    letterSpacing: '0.05em'
+                    background: quirofano.color, color: 'white',
+                    padding: '3px 12px', fontSize: '0.75rem', fontWeight: '700',
+                    borderBottomRightRadius: '8px', zIndex: 9998, letterSpacing: '0.05em'
                 }}>
                     {quirofano.nombre.toUpperCase()}
                 </div>
@@ -204,3 +199,4 @@ function App() {
 }
 
 export default App;
+
