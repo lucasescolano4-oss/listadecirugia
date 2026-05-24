@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 
-function ReceptionView({ socket, patients, activePatient, history }) {
+function ReceptionView({ socket, patients, activePatient, history, quirofano }) {
     const [filteredPatients, setFilteredPatients] = useState([]);
     const [searchTerm,       setSearchTerm]       = useState('');
     const [hideCompleted,    setHideCompleted]     = useState(true);
@@ -49,6 +49,10 @@ function ReceptionView({ socket, patients, activePatient, history }) {
         if (!window.confirm(
             '⚠️ NUEVA JORNADA\n\nEsto va a borrar:\n• La lista de pacientes\n• El paciente en pantalla\n• Todo el historial\n\n¿Confirmar?'
         )) return;
+        // Limpiar backup de localStorage para que no se restaure tras el reset
+        try {
+            if (quirofano?.id) localStorage.removeItem(`surgery_patients_${quirofano.id}`);
+        } catch (e) { /* */ }
         socket.emit('reset_all');
     };
 

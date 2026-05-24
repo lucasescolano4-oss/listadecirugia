@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { HashRouter, Routes, Route, NavLink } from 'react-router-dom';
 import io from 'socket.io-client';
 import ReceptionView from './ReceptionView';
@@ -106,12 +106,17 @@ function App() {
     const [history,       setHistory]       = useState([]);
     const [initError,     setInitError]     = useState(null);
 
+    const justJoined = useRef(false);
+
+    const patientsKey = (roomId) => `surgery_patients_${roomId}`;
+
     const handleSelectRoom = (q) => {
         try { sessionStorage.setItem('quirofano_selected', JSON.stringify(q)); } catch (e) { /* */ }
         setQuirofano(q);
         setPatients([]);
         setActivePatient(null);
         setHistory([]);
+        justJoined.current = true;
         socket.emit('join_room', q.id);
     };
 
@@ -134,9 +139,15 @@ function App() {
     // Unirse a la sala al reconectar
     useEffect(() => {
         if (!quirofano) return;
-        const handleConnect = () => socket.emit('join_room', quirofano.id);
+        const handleConnect = () => {
+            justJoined.current = true;
+            socket.emit('join_room', quirofano.id);
+        };
         socket.on('connect', handleConnect);
-        if (socket.connected) socket.emit('join_room', quirofano.id);
+        if (socket.connected) {
+            justJoined.current = true;
+            socket.emit('join_room', quirofano.id);
+        }
         return () => socket.off('connect', handleConnect);
     }, [quirofano]);
 
@@ -145,7 +156,30 @@ function App() {
         if (!quirofano) return;
         document.body.style.backgroundColor = '';
         try {
-            const handlePatientsUpdate = (data) => setPatients(data || []);
+            const handlePatientsUpdate = (data) => {
+                const list = data || [];
+                // Si el servidor devolvió lista vacía justo después de unirse a la sala,
+                // puede ser que Render reinició y perdió data.json → restaurar desde localStorage
+                if (justJoined.current && list.length === 0) {
+                    justJoined.current = false;
+                    try {
+                        const backup = localStorage.getItem(patientsKey(quirofano.id));
+                        if (backup) {
+                            const restored = JSON.parse(backup);
+                            if (restored.length > 0) {
+                                socket.emit('upload_patients', restored);
+                                return; // upload_patients disparará otro patients_update con los datos
+                            }
+                        }
+                    } catch (e) { /* */ }
+                }
+                justJoined.current = false;
+                setPatients(list);
+                // Guardar en localStorage como backup ante reinicios del servidor
+                if (list.length > 0) {
+                    try { localStorage.setItem(patientsKey(quirofano.id), JSON.stringify(list)); } catch (e) { /* */ }
+                }
+            };
             const handleActivePatient  = (data) => setActivePatient(data);
             const handleHistoryUpdate  = (data) => setHistory(data || []);
             socket.on('patients_update', handlePatientsUpdate);

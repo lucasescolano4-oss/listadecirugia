@@ -26,20 +26,69 @@ const io = new Server(server, {
     pingInterval: 25000
 });
 
-// Persistencia
+// ── Supabase ──────────────────────────────────────────────────────────────────
+let supabase = null;
+if (process.env.SUPABASE_URL && process.env.SUPABASE_ANON_KEY) {
+    const { createClient } = require('@supabase/supabase-js');
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
+    console.log('[DB] Usando Supabase para persistencia');
+} else {
+    console.log('[DB] Usando data.json como fallback (configura SUPABASE_URL y SUPABASE_ANON_KEY para persistencia permanente)');
+}
+
+// ── Fallback: data.json ───────────────────────────────────────────────────────
 const DATA_FILE = path.join(__dirname, 'data.json');
 
-function loadData() {
+function loadFile() {
     try {
         if (fs.existsSync(DATA_FILE)) return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
     } catch (err) { console.error('Error al cargar data.json:', err); }
     return {};
 }
 
-function saveData(data) {
+function saveFile(data) {
     try { fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2)); }
     catch (err) { console.error('Error al guardar data.json:', err); }
 }
+
+// ── Supabase: cargar y guardar ────────────────────────────────────────────────
+async function loadFromSupabase() {
+    try {
+        const { data, error } = await supabase.from('surgery_rooms').select('*');
+        if (error) throw error;
+        const result = {};
+        for (const row of data) {
+            result[row.room_id] = {
+                currentPatient:     row.active_patient  || null,
+                history:            row.history         || [],
+                currentPatientList: row.patient_list    || []
+            };
+        }
+        return result;
+    } catch (err) {
+        console.error('[Supabase] Error al cargar, usando data.json:', err.message);
+        return loadFile();
+    }
+}
+
+async function saveToSupabase(roomId, room) {
+    try {
+        const { error } = await supabase.from('surgery_rooms').upsert({
+            room_id:        roomId,
+            patient_list:   room.currentPatientList || [],
+            active_patient: room.currentPatient     || null,
+            history:        room.history            || [],
+            updated_at:     new Date().toISOString()
+        }, { onConflict: 'room_id' });
+        if (error) throw error;
+    } catch (err) {
+        console.error('[Supabase] Error al guardar:', err.message);
+        saveFile(rooms); // fallback a archivo
+    }
+}
+
+// ── Estado en memoria ─────────────────────────────────────────────────────────
+let rooms = {};
 
 function ensureIds(list) {
     return (list || []).map((p, i) => ({ ...p, _id: p._id || `gen-${Date.now()}-${i}` }));
@@ -48,9 +97,6 @@ function ensureIds(list) {
 function emptyRoom() {
     return { currentPatient: null, history: [], currentPatientList: [] };
 }
-
-// Estado: un objeto por quirofano { q1: {...}, q2: {...} }
-let rooms = loadData();
 
 function getRoom(roomId) {
     if (!rooms[roomId]) rooms[roomId] = emptyRoom();
@@ -63,8 +109,16 @@ function getRoomId(socket) {
     return r[0] || null;
 }
 
-function persist() { saveData(rooms); }
+// Guardar sala: Supabase si está disponible, sino data.json
+function persist(roomId) {
+    if (supabase) {
+        saveToSupabase(roomId, rooms[roomId]);
+    } else {
+        saveFile(rooms);
+    }
+}
 
+// ── Socket.io ─────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
     console.log('Cliente conectado:', socket.id);
 
@@ -85,7 +139,7 @@ io.on('connection', (socket) => {
         if (!roomId || !Array.isArray(data)) return;
         const room = getRoom(roomId);
         room.currentPatientList = ensureIds(data);
-        persist();
+        persist(roomId);
         io.to(roomId).emit('patients_update', room.currentPatientList);
     });
 
@@ -109,7 +163,7 @@ io.on('connection', (socket) => {
             room.currentPatient = { ...room.currentPatient, ...updatedPatient };
             io.to(roomId).emit('update_patient', room.currentPatient);
         }
-        persist();
+        persist(roomId);
         io.to(roomId).emit('patients_update', room.currentPatientList);
     });
 
@@ -121,7 +175,7 @@ io.on('connection', (socket) => {
             ? { ...patientData, startTime: new Date().toISOString() }
             : null;
         if (patientData) console.log(`[${roomId}] Proyectando:`, patientData['NOMBRE Y APELLIDO']);
-        persist();
+        persist(roomId);
         io.to(roomId).emit('update_patient', room.currentPatient);
     });
 
@@ -148,7 +202,7 @@ io.on('connection', (socket) => {
             });
         }
         room.currentPatient = null;
-        persist();
+        persist(roomId);
         io.to(roomId).emit('update_patient',  null);
         io.to(roomId).emit('history_update',  room.history);
         io.to(roomId).emit('patients_update', room.currentPatientList);
@@ -159,7 +213,7 @@ io.on('connection', (socket) => {
         if (!roomId) return;
         console.log(`[${roomId}] Nueva jornada`);
         rooms[roomId] = emptyRoom();
-        persist();
+        persist(roomId);
         io.to(roomId).emit('update_patient',  null);
         io.to(roomId).emit('history_update',  []);
         io.to(roomId).emit('patients_update', []);
@@ -179,7 +233,7 @@ io.on('connection', (socket) => {
             );
             if (!exists) room.currentPatientList.push(p);
         });
-        persist();
+        persist(roomId);
         io.to(roomId).emit('history_update',  room.history);
         io.to(roomId).emit('patients_update', room.currentPatientList);
     });
@@ -187,5 +241,12 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => console.log('Desconectado:', socket.id));
 });
 
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT}`));
+// ── Arrancar servidor ─────────────────────────────────────────────────────────
+async function start() {
+    rooms = supabase ? await loadFromSupabase() : loadFile();
+    console.log('[DB] Salas cargadas:', Object.keys(rooms));
+    const PORT = process.env.PORT || 3000;
+    server.listen(PORT, '0.0.0.0', () => console.log(`Servidor en puerto ${PORT}`));
+}
+
+start();
