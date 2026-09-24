@@ -143,6 +143,22 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('patients_update', room.currentPatientList);
     });
 
+    // Acepta un paciente o un array (pegado desde Excel); los agrega al final de la lista
+    socket.on('add_patient', (patientOrList) => {
+        const roomId = getRoomId(socket);
+        if (!roomId || !patientOrList) return;
+        const incoming = (Array.isArray(patientOrList) ? patientOrList : [patientOrList])
+            .filter(p => p && p['NOMBRE Y APELLIDO']);
+        if (incoming.length === 0) return;
+        const room = getRoom(roomId);
+        incoming.forEach(p => room.currentPatientList.push({
+            ...p,
+            _id: p._id || `manual-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`
+        }));
+        persist(roomId);
+        io.to(roomId).emit('patients_update', room.currentPatientList);
+    });
+
     socket.on('request_patients', () => {
         const roomId = getRoomId(socket);
         if (!roomId) return;
