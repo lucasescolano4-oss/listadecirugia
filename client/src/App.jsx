@@ -83,9 +83,9 @@ function Navigation({ quirofano, onChangeRoom }) {
                     paddingLeft: '8px'
                 }}
             >
-                <span className="nav-icon">🔬</span>
+                <span className="nav-icon">⊞</span>
                 <span className="nav-label" style={{ color: quirofano?.color, fontSize: '0.65rem' }}>
-                    {quirofano?.nombre?.replace('Quirófano ', 'Q') || 'Q?'}
+                    GENERAL
                 </span>
             </button>
         </nav>
@@ -195,7 +195,7 @@ function App() {
         }
     }, [quirofano]);
 
-    if (!quirofano) return <RoomSelector onSelect={handleSelectRoom} />;
+    if (!quirofano) return <RoomSelector socket={socket} onSelect={handleSelectRoom} />;
 
     if (initError) {
         return (

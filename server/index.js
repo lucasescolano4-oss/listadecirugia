@@ -104,28 +104,61 @@ function getRoom(roomId) {
     return rooms[roomId];
 }
 
+// Canal de la vista general: recibe el resumen de todos los quirófanos
+const MONITOR = 'monitor';
+
 function getRoomId(socket) {
-    const r = Array.from(socket.rooms).filter(r => r !== socket.id);
+    const r = Array.from(socket.rooms).filter(r => r !== socket.id && r !== MONITOR);
     return r[0] || null;
 }
 
-// Guardar sala: Supabase si está disponible, sino data.json
+function leaveAllRooms(socket) {
+    Array.from(socket.rooms)
+        .filter(r => r !== socket.id)
+        .forEach(r => socket.leave(r));
+}
+
+// Resumen liviano de cada sala para la vista general
+function buildOverview() {
+    const overview = {};
+    for (const [roomId, room] of Object.entries(rooms)) {
+        const active = room.currentPatient;
+        const pending = (room.currentPatientList || []).filter(p => !active || p._id !== active._id);
+        overview[roomId] = {
+            currentPatient: active,
+            pendingCount:   pending.length,
+            doneCount:      (room.history || []).length,
+            next:           pending.slice(0, 3).map(p => ({
+                HORA: p['HORA'], 'NOMBRE Y APELLIDO': p['NOMBRE Y APELLIDO'], OJO: p['OJO']
+            }))
+        };
+    }
+    return overview;
+}
+
+// Guardar sala: Supabase si está disponible, sino data.json. Avisa a la vista general.
 function persist(roomId) {
     if (supabase) {
         saveToSupabase(roomId, rooms[roomId]);
     } else {
         saveFile(rooms);
     }
+    io.to(MONITOR).emit('rooms_overview', buildOverview());
 }
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
     console.log('Cliente conectado:', socket.id);
 
+    socket.on('watch_all', () => {
+        leaveAllRooms(socket);
+        socket.join(MONITOR);
+        socket.emit('rooms_overview', buildOverview());
+    });
+
     socket.on('join_room', (roomId) => {
-        Array.from(socket.rooms)
-            .filter(r => r !== socket.id)
-            .forEach(r => socket.leave(r));
+        if (!roomId || roomId === MONITOR) return;
+        leaveAllRooms(socket);
         socket.join(roomId);
         console.log(`Socket ${socket.id} unido a sala: ${roomId}`);
         const room = getRoom(roomId);
