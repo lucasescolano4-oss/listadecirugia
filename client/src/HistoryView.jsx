@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { sendAction, actionErrorMessage } from './sendAction';
 
 function HistoryView({ socket, history }) {
     const [selectedIds, setSelectedIds] = useState([]);
@@ -32,8 +33,9 @@ function HistoryView({ socket, history }) {
         if (selectedIds.length === 0) return;
 
         if (window.confirm(`¿Seguro que desea eliminar ${selectedIds.length} elemento(s) del historial?`)) {
-            socket.emit('delete_history_item', selectedIds);
-            setSelectedIds([]);
+            sendAction(socket, 'delete_history_item', selectedIds)
+                .then(() => setSelectedIds([]))
+                .catch(err => alert(actionErrorMessage(err)));
         }
     };
 

@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
+import { sendAction, actionErrorMessage } from './sendAction';
 
 const PATIENT_FIELDS = ['HORA', 'NOMBRE Y APELLIDO', 'OJO', 'LIO', 'EDAD', 'DNI', 'OS', 'N°', 'CATA', 'DIL', 'APP'];
 const EMPTY_PATIENT  = Object.fromEntries(PATIENT_FIELDS.map(f => [f, '']));
@@ -50,8 +51,30 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
     const [newPatient,       setNewPatient]        = useState(EMPTY_PATIENT);
     const [showPaste,        setShowPaste]         = useState(false);
     const [pastedRows,       setPastedRows]        = useState([]);
+    const [toast,            setToast]             = useState(null);
+    const toastTimer = useRef(null);
 
     const surgeryHistory = history || [];
+
+    // ── Aviso de resultado (✓ enviado / ⚠ error) ──────────────────────────────
+    const showToast = (type, text) => {
+        clearTimeout(toastTimer.current);
+        setToast({ type, text });
+        toastTimer.current = setTimeout(() => setToast(null), type === 'ok' ? 2500 : 7000);
+    };
+    useEffect(() => () => clearTimeout(toastTimer.current), []);
+
+    // Envía la acción y avisa si se confirmó o falló. Devuelve true si se aplicó.
+    const run = async (okText, event, ...args) => {
+        try {
+            await sendAction(socket, event, ...args);
+            if (okText) showToast('ok', okText);
+            return true;
+        } catch (err) {
+            showToast('error', actionErrorMessage(err));
+            return false;
+        }
+    };
 
     // ── Filtrar lista ─────────────────────────────────────────────────────────
     useEffect(() => {
@@ -92,11 +115,11 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
         if (!window.confirm(
             '⚠️ NUEVA JORNADA\n\nEsto va a borrar:\n• La lista de pacientes\n• El paciente en pantalla\n• Todo el historial\n\n¿Confirmar?'
         )) return;
-        // Limpiar backup de localStorage para que no se restaure tras el reset
+        // Limpiar el backup local que usaban versiones anteriores
         try {
             if (quirofano?.id) localStorage.removeItem(`surgery_patients_${quirofano.id}`);
         } catch (e) { /* */ }
-        socket.emit('reset_all');
+        run('Nueva jornada iniciada', 'reset_all');
     };
 
     // ── Cargar Excel ──────────────────────────────────────────────────────────
@@ -121,7 +144,7 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
                 });
 
                 setSearchTerm('');
-                socket.emit('upload_patients', data);
+                run(`${data.length} pacientes cargados`, 'upload_patients', data);
                 // Limpiar el input para permitir subir el mismo archivo de nuevo
                 e.target.value = '';
             } catch (err) {
@@ -137,7 +160,7 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
         setShowAddForm(true);
     };
 
-    const handleAddPatient = (e) => {
+    const handleAddPatient = async (e) => {
         e.preventDefault();
         const nombre = newPatient['NOMBRE Y APELLIDO'].trim();
         if (!nombre) {
@@ -149,8 +172,8 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
             const val = String(newPatient[f]).trim();
             if (val) patient[f] = val;
         });
-        socket.emit('add_patient', patient);
-        setShowAddForm(false);
+        // Si falla, el formulario queda abierto para no perder lo escrito
+        if (await run('Paciente agregado', 'add_patient', patient)) setShowAddForm(false);
     };
 
     // ── Pegar filas desde Excel ───────────────────────────────────────────────
@@ -172,19 +195,24 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
     const validPasted   = pastedRows.filter(p => p['NOMBRE Y APELLIDO']);
     const skippedPasted = pastedRows.length - validPasted.length;
 
-    const confirmPaste = (mode) => {
+    const confirmPaste = async (mode) => {
         if (validPasted.length === 0) return;
+        let ok;
         if (mode === 'replace') {
             if (patients.length > 0 && !window.confirm(
                 `Esto reemplaza los ${patients.length} pacientes actuales por los ${validPasted.length} pegados.\n\n¿Confirmar?`
             )) return;
             setSearchTerm('');
-            socket.emit('upload_patients', validPasted.map((p, i) => ({ ...p, _id: `paste-${i}-${Date.now()}` })));
+            ok = await run(`Lista reemplazada (${validPasted.length} pacientes)`, 'upload_patients',
+                validPasted.map((p, i) => ({ ...p, _id: `paste-${i}-${Date.now()}` })));
         } else {
-            socket.emit('add_patient', validPasted);
+            ok = await run(`${validPasted.length} pacientes agregados`, 'add_patient', validPasted);
         }
-        setShowPaste(false);
-        setPastedRows([]);
+        // Si falla, la vista previa queda abierta para reintentar
+        if (ok) {
+            setShowPaste(false);
+            setPastedRows([]);
+        }
     };
 
     // Columnas de la vista previa: las estándar primero, después cualquier extra que venga en el pegado
@@ -198,7 +226,7 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
         e.stopPropagation();
         const patientToUpdate = patients.find(p => p._id === patientId);
         if (patientToUpdate) {
-            socket.emit('update_patient_in_list', { ...patientToUpdate, OJO: e.target.value });
+            run(null, 'update_patient_in_list', { ...patientToUpdate, OJO: e.target.value });
         }
     };
 
@@ -213,16 +241,15 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
     };
 
     const sendToScreen = (patient) => {
-        socket.emit('update_patient', patient);
         setShowModal(false);
         setPendingPatient(null);
+        run(`En pantalla: ${patient['NOMBRE Y APELLIDO'] || 'paciente'}`, 'update_patient', patient);
     };
 
     const handleFinalizeCurrent = () => {
-        // FIX: antes se emitía clear_patient dos veces — ahora solo una
-        socket.emit('clear_patient');
         setShowModal(false);
         setPendingPatient(null);
+        run('Cirugía finalizada', 'clear_patient');
     };
 
     const handleChangePatient = () => {
@@ -413,6 +440,22 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
                     </p>
                 )}
             </div>
+
+            {/* Aviso de resultado de la última acción */}
+            {toast && (
+                <div
+                    onClick={() => setToast(null)}
+                    style={{
+                        position: 'fixed', left: '50%', bottom: '90px', transform: 'translateX(-50%)',
+                        zIndex: 10001, maxWidth: '90vw', padding: '12px 20px', borderRadius: '10px',
+                        fontWeight: 700, color: 'white', cursor: 'pointer', textAlign: 'center',
+                        backgroundColor: toast.type === 'ok' ? '#16a34a' : '#dc2626',
+                        boxShadow: '0 6px 20px rgba(0,0,0,0.3)'
+                    }}
+                >
+                    {toast.type === 'ok' ? '✓ ' : '⚠️ '}{toast.text}
+                </div>
+            )}
 
             {/* Modal — pegar filas desde Excel */}
             {showPaste && (

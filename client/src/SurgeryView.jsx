@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { sendAction, actionErrorMessage } from './sendAction';
 
 function SurgeryView({ socket, activePatient }) {
     const patient = activePatient;
@@ -6,6 +7,29 @@ function SurgeryView({ socket, activePatient }) {
     useEffect(() => {
         document.body.classList.add('surgery-mode');
         return () => document.body.classList.remove('surgery-mode');
+    }, []);
+
+    // Mantener la pantalla encendida mientras esta vista está abierta (tablet del quirófano).
+    // El navegador libera el bloqueo al ocultar la página, así que se vuelve a pedir al volver.
+    useEffect(() => {
+        if (!('wakeLock' in navigator)) return;
+        let lock = null;
+        let active = true;
+        const requestLock = async () => {
+            if (!active || document.visibilityState !== 'visible') return;
+            try {
+                const newLock = await navigator.wakeLock.request('screen');
+                if (active) lock = newLock;
+                else newLock.release().catch(() => {}); // se salió de la vista mientras se pedía
+            } catch (e) { /* no soportado o rechazado: se usa la configuración de la tablet */ }
+        };
+        requestLock();
+        document.addEventListener('visibilitychange', requestLock);
+        return () => {
+            active = false;
+            document.removeEventListener('visibilitychange', requestLock);
+            if (lock) lock.release().catch(() => {});
+        };
     }, []);
 
     const [timer, setTimer] = useState(0);
@@ -36,7 +60,7 @@ function SurgeryView({ socket, activePatient }) {
 
     const handleFinish = () => {
         if (window.confirm('¿Está seguro de finalizar la cirugía actual?')) {
-            socket.emit('clear_patient');
+            sendAction(socket, 'clear_patient').catch(err => alert(actionErrorMessage(err)));
         }
     };
 

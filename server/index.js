@@ -22,8 +22,9 @@ const allowedOrigins = process.env.CLIENT_URL
 const io = new Server(server, {
     cors: { origin: allowedOrigins, methods: ['GET', 'POST'] },
     transports: ['websocket', 'polling'],
-    pingTimeout: 60000,
-    pingInterval: 25000
+    // Detectar conexiones muertas en ~20s (antes hasta 85s): celulares que se bloquean o cambian de red
+    pingInterval: 10000,
+    pingTimeout: 10000
 });
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
@@ -146,6 +147,13 @@ function persist(roomId) {
     io.to(MONITOR).emit('rooms_overview', buildOverview());
 }
 
+// Confirma al cliente que mandó la acción (si pidió confirmación)
+function reply(ack, result) {
+    if (typeof ack === 'function') ack(result);
+}
+
+const NO_ROOM = { ok: false, error: 'no-room' };
+
 // ── Socket.io ─────────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
     console.log('Cliente conectado:', socket.id);
@@ -167,22 +175,24 @@ io.on('connection', (socket) => {
         socket.emit('patients_update', room.currentPatientList);
     });
 
-    socket.on('upload_patients', (data) => {
+    socket.on('upload_patients', (data, ack) => {
         const roomId = getRoomId(socket);
-        if (!roomId || !Array.isArray(data)) return;
+        if (!roomId) return reply(ack, NO_ROOM);
+        if (!Array.isArray(data)) return reply(ack, { ok: false, error: 'invalid' });
         const room = getRoom(roomId);
         room.currentPatientList = ensureIds(data);
         persist(roomId);
         io.to(roomId).emit('patients_update', room.currentPatientList);
+        reply(ack, { ok: true });
     });
 
     // Acepta un paciente o un array (pegado desde Excel); los agrega al final de la lista
-    socket.on('add_patient', (patientOrList) => {
+    socket.on('add_patient', (patientOrList, ack) => {
         const roomId = getRoomId(socket);
-        if (!roomId || !patientOrList) return;
+        if (!roomId) return reply(ack, NO_ROOM);
         const incoming = (Array.isArray(patientOrList) ? patientOrList : [patientOrList])
             .filter(p => p && p['NOMBRE Y APELLIDO']);
-        if (incoming.length === 0) return;
+        if (incoming.length === 0) return reply(ack, { ok: false, error: 'invalid' });
         const room = getRoom(roomId);
         incoming.forEach(p => room.currentPatientList.push({
             ...p,
@@ -190,6 +200,7 @@ io.on('connection', (socket) => {
         }));
         persist(roomId);
         io.to(roomId).emit('patients_update', room.currentPatientList);
+        reply(ack, { ok: true });
     });
 
     socket.on('request_patients', () => {
@@ -201,9 +212,10 @@ io.on('connection', (socket) => {
         socket.emit('update_patient',  room.currentPatient);
     });
 
-    socket.on('update_patient_in_list', (updatedPatient) => {
+    socket.on('update_patient_in_list', (updatedPatient, ack) => {
         const roomId = getRoomId(socket);
-        if (!roomId || !updatedPatient || !updatedPatient._id) return;
+        if (!roomId) return reply(ack, NO_ROOM);
+        if (!updatedPatient || !updatedPatient._id) return reply(ack, { ok: false, error: 'invalid' });
         const room = getRoom(roomId);
         room.currentPatientList = room.currentPatientList.map(p =>
             p._id === updatedPatient._id ? updatedPatient : p
@@ -214,11 +226,12 @@ io.on('connection', (socket) => {
         }
         persist(roomId);
         io.to(roomId).emit('patients_update', room.currentPatientList);
+        reply(ack, { ok: true });
     });
 
-    socket.on('update_patient', (patientData) => {
+    socket.on('update_patient', (patientData, ack) => {
         const roomId = getRoomId(socket);
-        if (!roomId) return;
+        if (!roomId) return reply(ack, NO_ROOM);
         const room = getRoom(roomId);
         room.currentPatient = patientData
             ? { ...patientData, startTime: new Date().toISOString() }
@@ -226,11 +239,12 @@ io.on('connection', (socket) => {
         if (patientData) console.log(`[${roomId}] Proyectando:`, patientData['NOMBRE Y APELLIDO']);
         persist(roomId);
         io.to(roomId).emit('update_patient', room.currentPatient);
+        reply(ack, { ok: true });
     });
 
-    socket.on('clear_patient', () => {
+    socket.on('clear_patient', (ack) => {
         const roomId = getRoomId(socket);
-        if (!roomId) return;
+        if (!roomId) return reply(ack, NO_ROOM);
         const room = getRoom(roomId);
         if (room.currentPatient) {
             const endTime   = new Date();
@@ -255,22 +269,24 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('update_patient',  null);
         io.to(roomId).emit('history_update',  room.history);
         io.to(roomId).emit('patients_update', room.currentPatientList);
+        reply(ack, { ok: true });
     });
 
-    socket.on('reset_all', () => {
+    socket.on('reset_all', (ack) => {
         const roomId = getRoomId(socket);
-        if (!roomId) return;
+        if (!roomId) return reply(ack, NO_ROOM);
         console.log(`[${roomId}] Nueva jornada`);
         rooms[roomId] = emptyRoom();
         persist(roomId);
         io.to(roomId).emit('update_patient',  null);
         io.to(roomId).emit('history_update',  []);
         io.to(roomId).emit('patients_update', []);
+        reply(ack, { ok: true });
     });
 
-    socket.on('delete_history_item', (idOrIds) => {
+    socket.on('delete_history_item', (idOrIds, ack) => {
         const roomId = getRoomId(socket);
-        if (!roomId) return;
+        if (!roomId) return reply(ack, NO_ROOM);
         const room = getRoom(roomId);
         const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
         const toRestore = room.history.filter(i => ids.includes(i.historyId));
@@ -285,6 +301,7 @@ io.on('connection', (socket) => {
         persist(roomId);
         io.to(roomId).emit('history_update',  room.history);
         io.to(roomId).emit('patients_update', room.currentPatientList);
+        reply(ack, { ok: true });
     });
 
     socket.on('disconnect', () => console.log('Desconectado:', socket.id));

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { HashRouter, Routes, Route, NavLink } from 'react-router-dom';
 import io from 'socket.io-client';
 import ReceptionView from './ReceptionView';
@@ -20,10 +20,15 @@ function getServerURL() {
 const serverURL = getServerURL();
 console.log('[Socket] Conectando a:', serverURL);
 
+// Despierta a Render si estaba dormido (el primer pedido tras dormir tarda ~20-50s)
+const pingServer = () => fetch(`${serverURL}/health`).catch(() => {});
+
 const socket = io(serverURL, {
-    reconnectionAttempts: 10,
-    reconnectionDelay: 2000,
-    timeout: 15000,
+    // Nunca dejar de reintentar: si Render tarda en despertar, antes se rendía tras 10 intentos
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000,
     transports: ['websocket', 'polling']
 });
 
@@ -105,10 +110,7 @@ function App() {
     const [activePatient, setActivePatient] = useState(null);
     const [history,       setHistory]       = useState([]);
     const [initError,     setInitError]     = useState(null);
-
-    const justJoined = useRef(false);
-
-    const patientsKey = (roomId) => `surgery_patients_${roomId}`;
+    const [showOffline,   setShowOffline]   = useState(false);
 
     const handleSelectRoom = (q) => {
         try { sessionStorage.setItem('quirofano_selected', JSON.stringify(q)); } catch (e) { /* */ }
@@ -116,7 +118,6 @@ function App() {
         setPatients([]);
         setActivePatient(null);
         setHistory([]);
-        justJoined.current = true;
         socket.emit('join_room', q.id);
     };
 
@@ -130,24 +131,57 @@ function App() {
 
     // Ping cada 10 minutos para mantener Render despierto
     useEffect(() => {
-        const ping = () => fetch(`${serverURL}/health`).catch(() => {});
-        ping();
-        const interval = setInterval(ping, 10 * 60 * 1000);
+        const interval = setInterval(pingServer, 10 * 60 * 1000);
+        pingServer();
         return () => clearInterval(interval);
     }, []);
+
+    // Aviso de "sin conexión" si se corta más de 3 segundos (evita parpadeos en cortes breves)
+    useEffect(() => {
+        let timer = null;
+        const onDisconnect = () => { timer = setTimeout(() => setShowOffline(true), 3000); };
+        const onConnect    = () => { clearTimeout(timer); setShowOffline(false); };
+        socket.on('disconnect',    onDisconnect);
+        socket.on('connect_error', onDisconnect);
+        socket.on('connect',       onConnect);
+        if (!socket.connected) onDisconnect();
+        return () => {
+            clearTimeout(timer);
+            socket.off('disconnect',    onDisconnect);
+            socket.off('connect_error', onDisconnect);
+            socket.off('connect',       onConnect);
+        };
+    }, []);
+
+    // Al volver a la app (celular desbloqueado, pestaña al frente, vuelve internet):
+    // reconectar si hace falta y pedir el estado actual en vez de esperar al próximo cambio
+    useEffect(() => {
+        const resync = () => {
+            if (document.visibilityState === 'hidden') return;
+            pingServer();
+            if (!socket.connected) {
+                socket.connect(); // al conectar, los handlers de 'connect' se re-unen a la sala
+                return;
+            }
+            if (quirofano) socket.emit('join_room', quirofano.id);
+            else           socket.emit('watch_all');
+        };
+        document.addEventListener('visibilitychange', resync);
+        window.addEventListener('online', resync);
+        window.addEventListener('focus',  resync);
+        return () => {
+            document.removeEventListener('visibilitychange', resync);
+            window.removeEventListener('online', resync);
+            window.removeEventListener('focus',  resync);
+        };
+    }, [quirofano]);
 
     // Unirse a la sala al reconectar
     useEffect(() => {
         if (!quirofano) return;
-        const handleConnect = () => {
-            justJoined.current = true;
-            socket.emit('join_room', quirofano.id);
-        };
+        const handleConnect = () => socket.emit('join_room', quirofano.id);
         socket.on('connect', handleConnect);
-        if (socket.connected) {
-            justJoined.current = true;
-            socket.emit('join_room', quirofano.id);
-        }
+        if (socket.connected) socket.emit('join_room', quirofano.id);
         return () => socket.off('connect', handleConnect);
     }, [quirofano]);
 
@@ -156,30 +190,7 @@ function App() {
         if (!quirofano) return;
         document.body.style.backgroundColor = '';
         try {
-            const handlePatientsUpdate = (data) => {
-                const list = data || [];
-                // Si el servidor devolvió lista vacía justo después de unirse a la sala,
-                // puede ser que Render reinició y perdió data.json → restaurar desde localStorage
-                if (justJoined.current && list.length === 0) {
-                    justJoined.current = false;
-                    try {
-                        const backup = localStorage.getItem(patientsKey(quirofano.id));
-                        if (backup) {
-                            const restored = JSON.parse(backup);
-                            if (restored.length > 0) {
-                                socket.emit('upload_patients', restored);
-                                return; // upload_patients disparará otro patients_update con los datos
-                            }
-                        }
-                    } catch (e) { /* */ }
-                }
-                justJoined.current = false;
-                setPatients(list);
-                // Guardar en localStorage como backup ante reinicios del servidor
-                if (list.length > 0) {
-                    try { localStorage.setItem(patientsKey(quirofano.id), JSON.stringify(list)); } catch (e) { /* */ }
-                }
-            };
+            const handlePatientsUpdate = (data) => setPatients(data || []);
             const handleActivePatient  = (data) => setActivePatient(data);
             const handleHistoryUpdate  = (data) => setHistory(data || []);
             socket.on('patients_update', handlePatientsUpdate);
@@ -195,7 +206,24 @@ function App() {
         }
     }, [quirofano]);
 
-    if (!quirofano) return <RoomSelector socket={socket} onSelect={handleSelectRoom} />;
+    const offlineBanner = showOffline && (
+        <div className="no-print" style={{
+            position: 'fixed', top: 0, left: 0, right: 0, zIndex: 10000,
+            background: '#dc2626', color: 'white', textAlign: 'center',
+            padding: '8px 12px', fontWeight: 700, fontSize: '0.9rem'
+        }}>
+            ⚠️ Sin conexión con el servidor — reconectando… (si estaba dormido puede tardar hasta 1 minuto)
+        </div>
+    );
+
+    if (!quirofano) {
+        return (
+            <>
+                {offlineBanner}
+                <RoomSelector socket={socket} onSelect={handleSelectRoom} />
+            </>
+        );
+    }
 
     if (initError) {
         return (
@@ -210,6 +238,7 @@ function App() {
     return (
         <HashRouter>
             <div className="app-container">
+                {offlineBanner}
                 <div className="no-print" style={{
                     position: 'fixed', top: 0, left: 0,
                     background: quirofano.color, color: 'white',
