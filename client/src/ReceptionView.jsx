@@ -1,62 +1,70 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { sendAction, actionErrorMessage } from './sendAction';
-
-const PATIENT_FIELDS = ['HORA', 'NOMBRE Y APELLIDO', 'OJO', 'LIO', 'EDAD', 'DNI', 'OS', 'N°', 'CATA', 'DIL', 'APP'];
-const EMPTY_PATIENT  = Object.fromEntries(PATIENT_FIELDS.map(f => [f, '']));
-
-// Variantes de encabezado que se aceptan al pegar (se comparan en mayúsculas y sin espacios extra)
-const HEADER_ALIASES = {
-    'NOMBRE': 'NOMBRE Y APELLIDO', 'APELLIDO Y NOMBRE': 'NOMBRE Y APELLIDO', 'PACIENTE': 'NOMBRE Y APELLIDO',
-    'Nº': 'N°', 'NO': 'N°', 'NRO': 'N°', 'N': 'N°', 'NUMERO': 'N°', 'NÚMERO': 'N°',
-    'OBRA SOCIAL': 'OS'
-};
-
-function normalizeHeader(h) {
-    const key = String(h).trim().toUpperCase().replace(/\s+/g, ' ');
-    return HEADER_ALIASES[key] || key;
-}
+import { supabase } from './supabase';
+import { aFila, valor, label, normalizeHeader, parseHora, BASE_FIELDS, fechaLarga } from './config';
+import SelectorFecha from './SelectorFecha';
 
 // Convierte el texto copiado de Excel (filas separadas por salto de línea, celdas por tab)
-// en pacientes. Si la primera fila tiene encabezados se usan; si no, se asume el orden estándar.
-function parsePastedRows(text) {
+// en pacientes. Si la primera fila tiene encabezados se usan; si no, se asume el orden de `columnas`.
+function parsePastedRows(text, columnas) {
     const rows = text
         .split(/\r?\n/)
         .map(line => line.split('\t'))
         .filter(cells => cells.some(c => c.trim() !== ''));
     if (rows.length === 0) return [];
 
-    const firstRow = rows[0].map(normalizeHeader);
+    const firstRow  = rows[0].map(normalizeHeader);
     const hasHeader = firstRow.some(h => ['NOMBRE Y APELLIDO', 'HORA', 'DNI'].includes(h));
-    const headers = hasHeader ? firstRow : PATIENT_FIELDS;
-    const dataRows = hasHeader ? rows.slice(1) : rows;
+    const headers   = hasHeader ? firstRow : columnas;
+    const dataRows  = hasHeader ? rows.slice(1) : rows;
 
     return dataRows.map(cells => {
-        const patient = {};
+        const paciente = {};
         headers.forEach((h, i) => {
             const val = (cells[i] ?? '').trim();
-            if (h && val) patient[h] = val;
+            if (h && val) paciente[h] = val;
         });
-        return patient;
+        return paciente;
     });
 }
 
-function ReceptionView({ socket, patients, activePatient, history, quirofano }) {
-    const [filteredPatients, setFilteredPatients] = useState([]);
-    const [searchTerm,       setSearchTerm]       = useState('');
-    const [hideCompleted,    setHideCompleted]     = useState(true);
-    const [showModal,        setShowModal]         = useState(false);
-    const [pendingPatient,   setPendingPatient]    = useState(null);
-    const [showAddForm,      setShowAddForm]       = useState(false);
-    const [newPatient,       setNewPatient]        = useState(EMPTY_PATIENT);
-    const [showPaste,        setShowPaste]         = useState(false);
-    const [pastedRows,       setPastedRows]        = useState([]);
-    const [toast,            setToast]             = useState(null);
+// Lee la primera hoja de un Excel con una fila de encabezados
+function parseExcelSimple(buffer) {
+    const wb = XLSX.read(buffer, { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(ws, { raw: true }).map(row => {
+        const paciente = {};
+        Object.keys(row).forEach(k => { paciente[normalizeHeader(k)] = row[k]; });
+        return paciente;
+    });
+}
+
+function mensajeError(error) {
+    if (!navigator.onLine || /fetch|network/i.test(error?.message || '')) {
+        return 'Sin conexión. No se guardó — reintentá cuando vuelva la conexión.';
+    }
+    if (error?.code === '42501') return 'Tu cuenta no tiene permiso para modificar.';
+    return 'No se pudo guardar: ' + (error?.message || 'error desconocido');
+}
+
+const btn = (bg) => ({
+    padding: '8px 16px', fontWeight: 'bold', cursor: 'pointer', backgroundColor: bg,
+    color: 'white', border: 'none', borderRadius: '8px'
+});
+
+function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, fecha, setFecha, recargar }) {
+    const [searchTerm,     setSearchTerm]     = useState('');
+    const [hideCompleted,  setHideCompleted]  = useState(true);
+    const [pendingPatient, setPendingPatient] = useState(null);   // modal "hay una cirugía en curso"
+    const [form,           setForm]           = useState(null);   // { id?, valores }
+    const [preview,        setPreview]        = useState(null);   // { rows, origen } pegado o Excel
+    const [toast,          setToast]          = useState(null);
     const toastTimer = useRef(null);
 
-    const surgeryHistory = history || [];
+    const columnasForm = ui.columnas;
+    const tieneOjo     = ui.columnas.includes('OJO');
 
-    // ── Aviso de resultado (✓ enviado / ⚠ error) ──────────────────────────────
+    // ── Aviso de resultado (✓ guardado / ⚠ error) ─────────────────────────────
     const showToast = (type, text) => {
         clearTimeout(toastTimer.current);
         setToast({ type, text });
@@ -64,297 +72,203 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
     };
     useEffect(() => () => clearTimeout(toastTimer.current), []);
 
-    // Envía la acción y avisa si se confirmó o falló. Devuelve true si se aplicó.
-    const run = async (okText, event, ...args) => {
-        try {
-            await sendAction(socket, event, ...args);
-            if (okText) showToast('ok', okText);
-            return true;
-        } catch (err) {
-            showToast('error', actionErrorMessage(err));
-            return false;
-        }
+    // Ejecuta una operación de Supabase, avisa el resultado y refresca. Devuelve true si anduvo.
+    const run = async (okText, operacion) => {
+        let error;
+        try { ({ error } = await operacion()); } catch (e) { error = e; }
+        recargar();
+        if (error) { showToast('error', mensajeError(error)); return false; }
+        if (okText) showToast('ok', okText);
+        return true;
     };
 
     // ── Filtrar lista ─────────────────────────────────────────────────────────
-    useEffect(() => {
-        let list = patients || [];
+    let lista = rows;
+    if (hideCompleted) lista = lista.filter(r => r.estado !== 'finalizada');
+    if (searchTerm) {
+        const term = searchTerm.toLowerCase();
+        lista = lista.filter(r => [r.nombre, r.dni, r.cirugia, r.cirujano, r.diagnostico, ...Object.values(r.extra || {})]
+            .some(v => String(v ?? '').toLowerCase().includes(term)));
+    }
+    const pendientes = rows.filter(r => r.estado === 'pendiente').length;
 
-        if (hideCompleted) {
-            // Ocultar solo si hay un _id coincidente (evita falsos positivos)
-            const completedIds = new Set(
-                surgeryHistory
-                    .filter(h => h._id)
-                    .map(h => h._id)
-            );
-            // Fallback: nombre + DNI cuando no hay _id en el historial
-            list = list.filter(p => {
-                if (p._id && completedIds.has(p._id)) return false;
-                return !surgeryHistory.some(h =>
-                    !h._id &&
-                    h['NOMBRE Y APELLIDO'] === p['NOMBRE Y APELLIDO'] &&
-                    h['DNI'] && h['DNI'] === p['DNI']
-                );
-            });
-        }
-
-        if (searchTerm) {
-            const term = searchTerm.toLowerCase();
-            list = list.filter(p =>
-                Object.values(p).some(val =>
-                    String(val).toLowerCase().includes(term)
-                )
-            );
-        }
-
-        setFilteredPatients(list);
-    }, [patients, searchTerm, hideCompleted, surgeryHistory]);
-
-    // ── Nueva Jornada ─────────────────────────────────────────────────────────
-    const handleResetAll = () => {
+    // ── Vaciar el día ─────────────────────────────────────────────────────────
+    const handleVaciar = () => {
+        if (rows.length === 0) return;
         if (!window.confirm(
-            '⚠️ NUEVA JORNADA\n\nEsto va a borrar:\n• La lista de pacientes\n• El paciente en pantalla\n• Todo el historial\n\n¿Confirmar?'
+            `⚠️ VACIAR LISTA DEL DÍA\n\n${quirofano.nombre} — ${fechaLarga(fecha)}\n\n` +
+            `Se van a borrar las ${rows.length} cirugías de este día (pendientes, en curso y finalizadas).\n\n¿Confirmar?`
         )) return;
-        // Limpiar el backup local que usaban versiones anteriores
-        try {
-            if (quirofano?.id) localStorage.removeItem(`surgery_patients_${quirofano.id}`);
-        } catch (e) { /* */ }
-        run('Nueva jornada iniciada', 'reset_all');
+        run('Lista del día vaciada', () => supabase.from('qx_cirugias').delete()
+            .eq('institucion_id', institucion.id).eq('fecha', fecha).eq('quirofano', quirofano.numero));
     };
 
-    // ── Cargar Excel ──────────────────────────────────────────────────────────
+    // ── Cargar Excel → vista previa ───────────────────────────────────────────
     const handleFileUpload = (e) => {
         const file = e.target.files[0];
         if (!file) return;
-
         const reader = new FileReader();
         reader.onload = (evt) => {
             try {
-                const wb = XLSX.read(evt.target.result, { type: 'binary' });
-                const ws = wb.Sheets[wb.SheetNames[0]];
-                let data = XLSX.utils.sheet_to_json(ws);
-
-                // Normalizar claves (quitar espacios extra)
-                data = data.map((row, index) => {
-                    const newRow = { _id: `row-${index}-${Date.now()}` };
-                    Object.keys(row).forEach(key => {
-                        newRow[key.trim()] = row[key];
-                    });
-                    return newRow;
-                });
-
-                setSearchTerm('');
-                run(`${data.length} pacientes cargados`, 'upload_patients', data);
-                // Limpiar el input para permitir subir el mismo archivo de nuevo
-                e.target.value = '';
+                const pacientes = parseExcelSimple(evt.target.result);
+                if (pacientes.length === 0) return alert('El archivo no tiene filas con datos.');
+                setPreview({ rows: pacientes, origen: file.name });
             } catch (err) {
                 alert('Error al leer el archivo Excel: ' + err.message);
             }
+            e.target.value = ''; // permitir subir el mismo archivo de nuevo
         };
-        reader.readAsBinaryString(file);
+        reader.readAsArrayBuffer(file);
     };
 
-    // ── Agregar paciente manual ───────────────────────────────────────────────
-    const openAddForm = () => {
-        setNewPatient(EMPTY_PATIENT);
-        setShowAddForm(true);
-    };
-
-    const handleAddPatient = async (e) => {
-        e.preventDefault();
-        const nombre = newPatient['NOMBRE Y APELLIDO'].trim();
-        if (!nombre) {
-            alert('El nombre y apellido es obligatorio.');
-            return;
-        }
-        const patient = {};
-        PATIENT_FIELDS.forEach(f => {
-            const val = String(newPatient[f]).trim();
-            if (val) patient[f] = val;
-        });
-        // Si falla, el formulario queda abierto para no perder lo escrito
-        if (await run('Paciente agregado', 'add_patient', patient)) setShowAddForm(false);
-    };
-
-    // ── Pegar filas desde Excel ───────────────────────────────────────────────
-    const openPaste = () => {
-        setPastedRows([]);
-        setShowPaste(true);
-    };
-
+    // ── Pegar desde Excel → vista previa ──────────────────────────────────────
     const handlePaste = (e) => {
         e.preventDefault();
-        const rows = parsePastedRows(e.clipboardData.getData('text'));
-        if (rows.length === 0) {
+        const pacientes = parsePastedRows(e.clipboardData.getData('text'), ui.columnas);
+        if (pacientes.length === 0) {
             alert('No se detectaron filas. Copiá las celdas en Excel (Ctrl+C) y pegalas acá (Ctrl+V).');
             return;
         }
-        setPastedRows(rows);
+        setPreview({ rows: pacientes, origen: 'pegado' });
     };
 
-    const validPasted   = pastedRows.filter(p => p['NOMBRE Y APELLIDO']);
-    const skippedPasted = pastedRows.length - validPasted.length;
+    const previewRows    = preview?.rows || [];
+    const previewValidas = previewRows.filter(p => String(p['NOMBRE Y APELLIDO'] ?? '').trim());
+    const previewColumns = [...new Set([...ui.columnas, ...previewRows.flatMap(Object.keys)])];
 
-    const confirmPaste = async (mode) => {
-        if (validPasted.length === 0) return;
+    const confirmarPreview = async (modo) => {
+        if (previewValidas.length === 0) return;
+        const base  = modo === 'reemplazar' ? 0 : Math.max(0, ...rows.map(r => r.orden + 1));
+        const filas = previewValidas.map((p, i) => ({
+            ...aFila(p, { institucion_id: institucion.id, fecha, quirofano: quirofano.numero }),
+            orden: base + i
+        }));
+        const enOtros = filas.filter(f => f.quirofano !== quirofano.numero).length;
+
+        if (modo === 'reemplazar' && pendientes > 0 && !window.confirm(
+            `Esto reemplaza los ${pendientes} pacientes pendientes de ${quirofano.nombre} por los ${filas.length} nuevos.\n\n¿Confirmar?`
+        )) return;
+
+        const ok = await run(
+            `${filas.length} pacientes cargados` + (enOtros ? ` (${enOtros} en otros quirófanos)` : ''),
+            async () => {
+                // Primero insertar y recién después borrar los viejos: si falla, no se pierde nada
+                const ins = await supabase.from('qx_cirugias').insert(filas).select('id');
+                if (ins.error || modo !== 'reemplazar') return ins;
+                return supabase.from('qx_cirugias').delete()
+                    .eq('institucion_id', institucion.id).eq('fecha', fecha).eq('quirofano', quirofano.numero)
+                    .eq('estado', 'pendiente')
+                    .not('id', 'in', `(${ins.data.map(r => r.id).join(',')})`);
+            }
+        );
+        if (ok) { setSearchTerm(''); setPreview(null); }
+    };
+
+    // ── Agregar / editar una cirugía ──────────────────────────────────────────
+    const abrirNuevo = () => setForm({
+        valores: { ...Object.fromEntries(columnasForm.map(c => [c, ''])), FECHA: fecha, QUIROFANO: String(quirofano.numero) }
+    });
+
+    const abrirEditar = (r) => setForm({
+        id: r.id,
+        valores: { ...Object.fromEntries(columnasForm.map(c => [c, String(valor(r, c))])), FECHA: r.fecha, QUIROFANO: String(r.quirofano ?? '') }
+    });
+
+    const guardarForm = async (e) => {
+        e.preventDefault();
+        const { FECHA, QUIROFANO, ...campos } = form.valores;
+        if (!String(campos['NOMBRE Y APELLIDO'] || '').trim()) return alert('El nombre y apellido es obligatorio.');
+
+        const fila = aFila({ ...campos, QUIROFANO }, { institucion_id: institucion.id, fecha: FECHA, quirofano: quirofano.numero });
         let ok;
-        if (mode === 'replace') {
-            if (patients.length > 0 && !window.confirm(
-                `Esto reemplaza los ${patients.length} pacientes actuales por los ${validPasted.length} pegados.\n\n¿Confirmar?`
-            )) return;
-            setSearchTerm('');
-            ok = await run(`Lista reemplazada (${validPasted.length} pacientes)`, 'upload_patients',
-                validPasted.map((p, i) => ({ ...p, _id: `paste-${i}-${Date.now()}` })));
+        if (form.id) {
+            // Al editar, un campo vacío tiene que borrar el valor anterior
+            const original = rows.find(r => r.id === form.id);
+            const cambios  = { fecha: FECHA, quirofano: fila.quirofano, extra: { ...(original?.extra || {}) } };
+            columnasForm.forEach(col => {
+                const campo = BASE_FIELDS[col];
+                if (campo && campo !== 'quirofano') cambios[campo] = fila[campo] ?? null;
+                else if (!campo) delete cambios.extra[col];
+            });
+            Object.assign(cambios.extra, fila.extra);
+            cambios.nombre = fila.nombre;
+            ok = await run('Cambios guardados', () => supabase.from('qx_cirugias').update(cambios).eq('id', form.id));
         } else {
-            ok = await run(`${validPasted.length} pacientes agregados`, 'add_patient', validPasted);
+            const orden = Math.max(0, ...rows.map(r => r.orden + 1));
+            ok = await run('Paciente agregado', () => supabase.from('qx_cirugias').insert({ ...fila, orden }));
         }
-        // Si falla, la vista previa queda abierta para reintentar
-        if (ok) {
-            setShowPaste(false);
-            setPastedRows([]);
-        }
+        // Si falla, el formulario queda abierto para no perder lo escrito
+        if (ok) setForm(null);
     };
 
-    // Columnas de la vista previa: las estándar primero, después cualquier extra que venga en el pegado
-    const previewColumns = [
-        ...PATIENT_FIELDS,
-        ...[...new Set(pastedRows.flatMap(Object.keys))].filter(k => !PATIENT_FIELDS.includes(k))
-    ];
+    const borrar = async () => {
+        if (!window.confirm(`¿Borrar la cirugía de ${form.valores['NOMBRE Y APELLIDO']}?`)) return;
+        if (await run('Cirugía borrada', () => supabase.from('qx_cirugias').delete().eq('id', form.id))) setForm(null);
+    };
 
-    // ── Cambio de OJO en la tabla ─────────────────────────────────────────────
-    const handleOjoChange = (e, patientId) => {
+    // ── Cambio de OJO en la tabla (Privado) ───────────────────────────────────
+    const handleOjoChange = (e, r) => {
         e.stopPropagation();
-        const patientToUpdate = patients.find(p => p._id === patientId);
-        if (patientToUpdate) {
-            run(null, 'update_patient_in_list', { ...patientToUpdate, OJO: e.target.value });
-        }
+        run(null, () => supabase.from('qx_cirugias').update({ extra: { ...r.extra, OJO: e.target.value } }).eq('id', r.id));
     };
 
-    // ── Proyectar paciente ────────────────────────────────────────────────────
-    const projectPatient = (patient) => {
-        if (activePatient && activePatient._id !== patient._id) {
-            setPendingPatient(patient);
-            setShowModal(true);
-        } else {
-            sendToScreen(patient);
-        }
+    // ── Proyectar ─────────────────────────────────────────────────────────────
+    const projectPatient = (r) => {
+        if (activa && activa.id !== r.id) setPendingPatient(r);
+        else sendToScreen(r);
     };
 
-    const sendToScreen = (patient) => {
-        setShowModal(false);
+    const sendToScreen = (r) => {
         setPendingPatient(null);
-        run(`En pantalla: ${patient['NOMBRE Y APELLIDO'] || 'paciente'}`, 'update_patient', patient);
+        run(`En pantalla: ${r.nombre}`, () => supabase.rpc('qx_proyectar', { p_id: r.id }));
     };
 
     const handleFinalizeCurrent = () => {
-        setShowModal(false);
         setPendingPatient(null);
-        run('Cirugía finalizada', 'clear_patient');
-    };
-
-    const handleChangePatient = () => {
-        if (pendingPatient) sendToScreen(pendingPatient);
-    };
-
-    const closeModal = () => {
-        setShowModal(false);
-        setPendingPatient(null);
-    };
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-    const isCompleted = (p) => {
-        if (p._id) {
-            return surgeryHistory.some(h => h._id === p._id);
-        }
-        return surgeryHistory.some(h =>
-            h['NOMBRE Y APELLIDO'] === p['NOMBRE Y APELLIDO'] &&
-            h['DNI'] && h['DNI'] === p['DNI']
-        );
+        run('Cirugía finalizada', () => supabase.rpc('qx_finalizar', { p_institucion: institucion.id, p_quirofano: quirofano.numero }));
     };
 
     // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div className="reception-container">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <h1 style={{ margin: 0 }}>Panel de Control — Recepción</h1>
-                <button
-                    onClick={handleResetAll}
-                    style={{
-                        padding: '10px 20px',
-                        fontSize: '0.95rem',
-                        fontWeight: 'bold',
-                        cursor: 'pointer',
-                        backgroundColor: '#dc2626',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px'
-                    }}
-                >
-                    🗑️ NUEVA JORNADA
-                </button>
-            </div>
-
-            <div className="upload-section">
-                <label>
-                    <strong>Cargar Lista (Excel): </strong>
-                    <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} />
-                </label>
-                <button
-                    onClick={openAddForm}
-                    style={{
-                        padding: '8px 16px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer',
-                        backgroundColor: '#0ea5e9',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px'
-                    }}
-                >
-                    ➕ AGREGAR PACIENTE
-                </button>
-                <button
-                    onClick={openPaste}
-                    style={{
-                        padding: '8px 16px',
-                        fontWeight: 'bold',
-                        cursor: 'pointer',
-                        backgroundColor: '#16a34a',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '8px'
-                    }}
-                >
-                    📋 PEGAR DESDE EXCEL
-                </button>
-                {patients.length > 0 && (
-                    <span>{patients.length} pacientes cargados</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                <h1 style={{ margin: 0 }}>Recepción — {quirofano.nombre}</h1>
+                {puedeEditar && rows.length > 0 && (
+                    <button onClick={handleVaciar} style={{ ...btn('#dc2626'), padding: '10px 20px', fontSize: '0.95rem' }}>
+                        🗑️ VACIAR LISTA DEL DÍA
+                    </button>
                 )}
             </div>
 
-            <div className="search-section" style={{ margin: '20px 0', display: 'flex', gap: '20px', alignItems: 'center' }}>
-                <input
-                    type="text"
-                    placeholder="Buscar paciente (Nombre, DNI, etc…)"
-                    value={searchTerm}
-                    onChange={e => setSearchTerm(e.target.value)}
-                    style={{ padding: '10px', flex: 1, fontSize: '16px' }}
-                />
+            <div style={{ marginBottom: '1rem' }}>
+                <SelectorFecha fecha={fecha} setFecha={setFecha} />
+            </div>
+
+            {puedeEditar ? (
+                <div className="upload-section">
+                    <label>
+                        <strong>Cargar Lista (Excel): </strong>
+                        <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} />
+                    </label>
+                    <button onClick={abrirNuevo} style={btn('#0ea5e9')}>➕ AGREGAR PACIENTE</button>
+                    <button onClick={() => setPreview({ rows: [], origen: 'pegado' })} style={btn('#16a34a')}>📋 PEGAR DESDE EXCEL</button>
+                    {rows.length > 0 && <span>{pendientes} pendientes · {rows.length} en total</span>}
+                </div>
+            ) : (
+                <div className="upload-section" style={{ color: '#475569' }}>
+                    👁️ Cuenta de solo lectura — {pendientes} pendientes · {rows.length} en total
+                </div>
+            )}
+
+            <div className="search-section" style={{ margin: '20px 0', display: 'flex', gap: '20px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input type="text" placeholder="Buscar paciente (Nombre, DNI, etc…)" value={searchTerm}
+                       onChange={e => setSearchTerm(e.target.value)} style={{ padding: '10px', flex: 1, minWidth: '200px', fontSize: '16px' }} />
                 <label style={{
-                    display: 'flex', alignItems: 'center', gap: '8px',
-                    cursor: 'pointer', whiteSpace: 'nowrap',
-                    backgroundColor: '#f1f5f9', padding: '10px 15px',
-                    borderRadius: '8px', border: '1px solid #cbd5e1'
+                    display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', whiteSpace: 'nowrap',
+                    backgroundColor: '#f1f5f9', padding: '10px 15px', borderRadius: '8px', border: '1px solid #cbd5e1'
                 }}>
-                    <input
-                        type="checkbox"
-                        checked={hideCompleted}
-                        onChange={e => setHideCompleted(e.target.checked)}
-                        style={{ width: '20px', height: '20px' }}
-                    />
+                    <input type="checkbox" checked={hideCompleted} onChange={e => setHideCompleted(e.target.checked)}
+                           style={{ width: '20px', height: '20px' }} />
                     <strong>OCULTAR FINALIZADOS</strong>
                 </label>
             </div>
@@ -364,142 +278,124 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
                     <thead>
                         <tr>
                             <th>Acción</th>
-                            <th>HORA</th>
-                            <th>NOMBRE Y APELLIDO</th>
-                            <th>OJO</th>
-                            <th>LIO</th>
-                            <th>EDAD</th>
-                            <th>DNI</th>
-                            <th>OS</th>
-                            <th>N°</th>
-                            <th>CATA</th>
-                            <th>DIL</th>
-                            <th>APP</th>
+                            {ui.columnas.map(c => <th key={c}>{label(c)}</th>)}
+                            {puedeEditar && <th></th>}
                         </tr>
                     </thead>
                     <tbody>
-                        {filteredPatients.map((p, index) => {
-                            const isActive    = activePatient && activePatient._id === p._id;
-                            const isDone      = isCompleted(p);
-
+                        {lista.map(r => {
+                            const isActive = r.estado === 'en_curso';
+                            const isDone   = r.estado === 'finalizada';
+                            const clickable = puedeEditar && !isDone;
                             return (
-                                <tr
-                                    key={p._id || index}
-                                    onClick={() => !isDone && projectPatient(p)}
+                                <tr key={r.id} onClick={() => clickable && projectPatient(r)}
                                     style={{
                                         backgroundColor: isActive ? '#e0f2fe' : (isDone ? '#f0fdf4' : 'transparent'),
                                         borderLeft: isActive ? '4px solid #0ea5e9' : (isDone ? '4px solid #22c55e' : 'none'),
-                                        cursor: isDone ? 'default' : 'pointer',
+                                        cursor: clickable ? 'pointer' : 'default',
                                         opacity: isDone ? 0.7 : 1
-                                    }}
-                                >
+                                    }}>
                                     <td>
                                         {isDone ? (
                                             <span style={{ color: '#22c55e', fontWeight: 'bold' }}>✅ FINALIZADO</span>
+                                        ) : isActive ? (
+                                            <span style={{ color: '#0ea5e9', fontWeight: 'bold' }}>● EN CURSO</span>
+                                        ) : puedeEditar ? (
+                                            <button onClick={e => { e.stopPropagation(); projectPatient(r); }}>PROYECTAR</button>
                                         ) : (
-                                            <button onClick={e => { e.stopPropagation(); projectPatient(p); }}>
-                                                PROYECTAR
-                                            </button>
+                                            <span style={{ color: '#64748b' }}>Pendiente</span>
                                         )}
                                     </td>
-                                    <td>{p['HORA']}</td>
-                                    <td>{p['NOMBRE Y APELLIDO']}</td>
-                                    <td onClick={e => e.stopPropagation()}>
-                                        <select
-                                            value={p['OJO'] ? String(p['OJO']).toUpperCase().trim() : ''}
-                                            onChange={e => handleOjoChange(e, p._id)}
-                                            style={{ padding: '5px' }}
-                                            disabled={isDone}
-                                        >
-                                            <option value="">ELEGIR</option>
-                                            <option value="DERECHO">DERECHO</option>
-                                            <option value="IZQUIERDO">IZQUIERDO</option>
-                                        </select>
-                                    </td>
-                                    <td>{p['LIO']}</td>
-                                    <td>{p['EDAD']}</td>
-                                    <td>{p['DNI']}</td>
-                                    <td>{p['OS']}</td>
-                                    <td>{p['N°']}</td>
-                                    <td>{p['CATA']}</td>
-                                    <td>{p['DIL']}</td>
-                                    <td>{p['APP']}</td>
+                                    {ui.columnas.map(c => (
+                                        c === 'OJO' && tieneOjo && puedeEditar ? (
+                                            <td key={c} onClick={e => e.stopPropagation()}>
+                                                <select value={String(valor(r, 'OJO')).toUpperCase().trim()}
+                                                        onChange={e => handleOjoChange(e, r)} style={{ padding: '5px' }} disabled={isDone}>
+                                                    <option value="">ELEGIR</option>
+                                                    <option value="DERECHO">DERECHO</option>
+                                                    <option value="IZQUIERDO">IZQUIERDO</option>
+                                                </select>
+                                            </td>
+                                        ) : (
+                                            <td key={c}>{valor(r, c)}</td>
+                                        )
+                                    ))}
+                                    {puedeEditar && (
+                                        <td onClick={e => e.stopPropagation()}>
+                                            <button onClick={() => abrirEditar(r)} title="Editar">✏️</button>
+                                        </td>
+                                    )}
                                 </tr>
                             );
                         })}
                     </tbody>
                 </table>
-                {patients.length === 0 && (
+                {rows.length === 0 && (
                     <p style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>
-                        Cargue un archivo Excel para ver la lista.
+                        No hay cirugías cargadas para este día en {quirofano.nombre}.
                     </p>
                 )}
-                {patients.length > 0 && filteredPatients.length === 0 && (
-                    <p style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>
-                        No hay pacientes que coincidan con la búsqueda.
-                    </p>
+                {rows.length > 0 && lista.length === 0 && (
+                    <p style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>No hay pacientes que coincidan.</p>
                 )}
             </div>
 
             {/* Aviso de resultado de la última acción */}
             {toast && (
-                <div
-                    onClick={() => setToast(null)}
-                    style={{
-                        position: 'fixed', left: '50%', bottom: '90px', transform: 'translateX(-50%)',
-                        zIndex: 10001, maxWidth: '90vw', padding: '12px 20px', borderRadius: '10px',
-                        fontWeight: 700, color: 'white', cursor: 'pointer', textAlign: 'center',
-                        backgroundColor: toast.type === 'ok' ? '#16a34a' : '#dc2626',
-                        boxShadow: '0 6px 20px rgba(0,0,0,0.3)'
-                    }}
-                >
+                <div onClick={() => setToast(null)} style={{
+                    position: 'fixed', left: '50%', bottom: '90px', transform: 'translateX(-50%)',
+                    zIndex: 10001, maxWidth: '90vw', padding: '12px 20px', borderRadius: '10px',
+                    fontWeight: 700, color: 'white', cursor: 'pointer', textAlign: 'center',
+                    backgroundColor: toast.type === 'ok' ? '#16a34a' : '#dc2626',
+                    boxShadow: '0 6px 20px rgba(0,0,0,0.3)'
+                }}>
                     {toast.type === 'ok' ? '✓ ' : '⚠️ '}{toast.text}
                 </div>
             )}
 
-            {/* Modal — pegar filas desde Excel */}
-            {showPaste && (
-                <div className="modal-overlay" onClick={() => setShowPaste(false)}>
-                    <div
-                        className="modal-content"
-                        onClick={e => e.stopPropagation()}
-                        style={{ maxWidth: '1100px', width: '95%', maxHeight: '90vh', overflowY: 'auto', textAlign: 'left' }}
-                    >
-                        <h2 style={{ marginTop: 0, textAlign: 'center' }}>📋 Pegar desde Excel</h2>
+            {/* Modal — vista previa de pegado o Excel */}
+            {preview && (
+                <div className="modal-overlay" onClick={() => setPreview(null)}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()}
+                         style={{ maxWidth: '1100px', width: '95%', maxHeight: '90vh', overflowY: 'auto', textAlign: 'left' }}>
+                        <h2 style={{ marginTop: 0, textAlign: 'center' }}>
+                            {preview.origen === 'pegado' ? '📋 Pegar desde Excel' : `📄 ${preview.origen}`}
+                        </h2>
+                        <p style={{ textAlign: 'center', marginTop: 0, color: '#475569' }}>
+                            Se cargan en <strong>{quirofano.nombre}</strong> para el <strong>{fechaLarga(fecha)}</strong>
+                            {' '}(salvo las filas que traigan su propio quirófano).
+                        </p>
 
-                        <textarea
-                            onPaste={handlePaste}
-                            value=""
-                            onChange={() => {}}
-                            autoFocus
-                            placeholder={'Seleccioná las filas en Excel, copiá (Ctrl+C) y pegá acá (Ctrl+V).\n\nPodés incluir la fila de encabezados (HORA, NOMBRE Y APELLIDO, …) o solo los datos en el orden:\nHORA · NOMBRE Y APELLIDO · OJO · LIO · EDAD · DNI · OS · N° · CATA · DIL · APP'}
-                            style={{
-                                width: '100%', minHeight: pastedRows.length ? '60px' : '140px',
-                                padding: '12px', fontSize: '15px', boxSizing: 'border-box',
-                                border: '2px dashed #16a34a', borderRadius: '8px', resize: 'vertical'
-                            }}
-                        />
+                        {preview.origen === 'pegado' && (
+                            <textarea onPaste={handlePaste} value="" onChange={() => {}} autoFocus
+                                placeholder={`Seleccioná las filas en Excel, copiá (Ctrl+C) y pegá acá (Ctrl+V).\n\nPodés incluir la fila de encabezados o solo los datos en este orden:\n${ui.columnas.map(label).join(' · ')}`}
+                                style={{
+                                    width: '100%', minHeight: previewRows.length ? '60px' : '140px',
+                                    padding: '12px', fontSize: '15px', boxSizing: 'border-box',
+                                    border: '2px dashed #16a34a', borderRadius: '8px', resize: 'vertical'
+                                }} />
+                        )}
 
-                        {pastedRows.length > 0 && (
+                        {previewRows.length > 0 && (
                             <>
                                 <p style={{ margin: '12px 0 8px' }}>
-                                    <strong>{validPasted.length} pacientes detectados.</strong>
-                                    {skippedPasted > 0 && (
+                                    <strong>{previewValidas.length} pacientes detectados.</strong>
+                                    {previewRows.length > previewValidas.length && (
                                         <span style={{ color: '#dc2626' }}>
-                                            {' '}{skippedPasted} fila(s) sin NOMBRE Y APELLIDO se van a omitir (en rojo).
+                                            {' '}{previewRows.length - previewValidas.length} fila(s) sin NOMBRE Y APELLIDO se van a omitir (en rojo).
                                         </span>
                                     )}
                                     {' '}Revisá que cada dato esté en su columna.
                                 </p>
                                 <div style={{ overflowX: 'auto', border: '1px solid #cbd5e1', borderRadius: '8px' }}>
                                     <table style={{ fontSize: '0.85rem' }}>
-                                        <thead>
-                                            <tr>{previewColumns.map(c => <th key={c}>{c}</th>)}</tr>
-                                        </thead>
+                                        <thead><tr>{previewColumns.map(c => <th key={c}>{label(c)}</th>)}</tr></thead>
                                         <tbody>
-                                            {pastedRows.map((p, i) => (
-                                                <tr key={i} style={{ backgroundColor: p['NOMBRE Y APELLIDO'] ? 'transparent' : '#fee2e2' }}>
-                                                    {previewColumns.map(c => <td key={c}>{p[c] ?? ''}</td>)}
+                                            {previewRows.map((p, i) => (
+                                                <tr key={i} style={{ backgroundColor: String(p['NOMBRE Y APELLIDO'] ?? '').trim() ? 'transparent' : '#fee2e2' }}>
+                                                    {previewColumns.map(c => (
+                                                        <td key={c}>{c === 'HORA' ? (parseHora(p[c]) || String(p[c] ?? '')) : String(p[c] ?? '')}</td>
+                                                    ))}
                                                 </tr>
                                             ))}
                                         </tbody>
@@ -509,33 +405,17 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
                         )}
 
                         <div style={{ display: 'flex', gap: '12px', marginTop: '1.5rem', flexWrap: 'wrap' }}>
-                            <button
-                                onClick={() => confirmPaste('append')}
-                                disabled={validPasted.length === 0}
-                                style={{
-                                    flex: 1, padding: '12px', fontSize: '1rem', fontWeight: 'bold',
-                                    backgroundColor: '#22c55e', color: 'white', border: 'none', borderRadius: '8px',
-                                    cursor: validPasted.length ? 'pointer' : 'not-allowed', opacity: validPasted.length ? 1 : 0.5
-                                }}
-                            >
-                                AGREGAR A LA LISTA
-                            </button>
-                            <button
-                                onClick={() => confirmPaste('replace')}
-                                disabled={validPasted.length === 0}
-                                style={{
-                                    flex: 1, padding: '12px', fontSize: '1rem', fontWeight: 'bold',
-                                    backgroundColor: '#f59e0b', color: 'white', border: 'none', borderRadius: '8px',
-                                    cursor: validPasted.length ? 'pointer' : 'not-allowed', opacity: validPasted.length ? 1 : 0.5
-                                }}
-                            >
-                                REEMPLAZAR LISTA
-                            </button>
-                            <button
-                                onClick={() => setShowPaste(false)}
-                                className="btn-cancel"
-                                style={{ flex: 1, padding: '12px', fontSize: '1rem', borderRadius: '8px', cursor: 'pointer' }}
-                            >
+                            {['agregar', 'reemplazar'].map(modo => (
+                                <button key={modo} onClick={() => confirmarPreview(modo)} disabled={previewValidas.length === 0}
+                                        style={{
+                                            ...btn(modo === 'agregar' ? '#22c55e' : '#f59e0b'), flex: 1, padding: '12px', fontSize: '1rem',
+                                            cursor: previewValidas.length ? 'pointer' : 'not-allowed', opacity: previewValidas.length ? 1 : 0.5
+                                        }}>
+                                    {modo === 'agregar' ? 'AGREGAR A LA LISTA' : 'REEMPLAZAR PENDIENTES'}
+                                </button>
+                            ))}
+                            <button onClick={() => setPreview(null)} className="btn-cancel"
+                                    style={{ flex: 1, padding: '12px', fontSize: '1rem', borderRadius: '8px', cursor: 'pointer' }}>
                                 CANCELAR
                             </button>
                         </div>
@@ -543,66 +423,63 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
                 </div>
             )}
 
-            {/* Modal — agregar paciente manual */}
-            {showAddForm && (
-                <div className="modal-overlay" onClick={() => setShowAddForm(false)}>
-                    <div
-                        className="modal-content"
-                        onClick={e => e.stopPropagation()}
-                        style={{ maxWidth: '600px', width: '95%', maxHeight: '90vh', overflowY: 'auto', textAlign: 'left' }}
-                    >
-                        <h2 style={{ marginTop: 0, textAlign: 'center' }}>➕ Agregar paciente</h2>
-                        <form onSubmit={handleAddPatient}>
+            {/* Modal — agregar / editar cirugía */}
+            {form && (
+                <div className="modal-overlay" onClick={() => setForm(null)}>
+                    <div className="modal-content" onClick={e => e.stopPropagation()}
+                         style={{ maxWidth: '640px', width: '95%', maxHeight: '90vh', overflowY: 'auto', textAlign: 'left' }}>
+                        <h2 style={{ marginTop: 0, textAlign: 'center' }}>{form.id ? '✏️ Editar cirugía' : '➕ Agregar paciente'}</h2>
+                        <form onSubmit={guardarForm}>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
-                                {PATIENT_FIELDS.map(field => (
-                                    <label
-                                        key={field}
-                                        style={{
-                                            display: 'flex', flexDirection: 'column', gap: '4px',
-                                            fontWeight: 'bold', fontSize: '0.85rem',
-                                            gridColumn: field === 'NOMBRE Y APELLIDO' ? '1 / -1' : undefined
-                                        }}
-                                    >
-                                        {field}{field === 'NOMBRE Y APELLIDO' && ' *'}
-                                        {field === 'OJO' ? (
-                                            <select
-                                                value={newPatient.OJO}
-                                                onChange={e => setNewPatient({ ...newPatient, OJO: e.target.value })}
-                                                style={{ padding: '8px', fontSize: '16px' }}
-                                            >
+                                {['FECHA', 'QUIROFANO', ...columnasForm].map(field => {
+                                    const set = (v) => setForm(f => ({ ...f, valores: { ...f.valores, [field]: v } }));
+                                    const val = form.valores[field] ?? '';
+                                    const largo = ['NOMBRE Y APELLIDO', 'DIAGNOSTICO', 'CIRUGIA', 'OBSERVACIONES', 'APP'].includes(field);
+                                    const estilo = { padding: '8px', fontSize: '16px' };
+                                    let control;
+                                    if (field === 'FECHA') {
+                                        control = <input type="date" required value={val} onChange={e => set(e.target.value)} style={estilo} />;
+                                    } else if (field === 'QUIROFANO') {
+                                        control = (
+                                            <select value={val} onChange={e => set(e.target.value)} style={estilo}>
+                                                {Array.from({ length: institucion.quirofanos }, (_, i) => (
+                                                    <option key={i} value={String(i + 1)}>Quirófano {i + 1}</option>
+                                                ))}
+                                            </select>
+                                        );
+                                    } else if (field === 'OJO') {
+                                        control = (
+                                            <select value={String(val).toUpperCase()} onChange={e => set(e.target.value)} style={estilo}>
                                                 <option value="">ELEGIR</option>
                                                 <option value="DERECHO">DERECHO</option>
                                                 <option value="IZQUIERDO">IZQUIERDO</option>
                                             </select>
-                                        ) : (
-                                            <input
-                                                type={field === 'HORA' ? 'time' : 'text'}
-                                                value={newPatient[field]}
-                                                onChange={e => setNewPatient({ ...newPatient, [field]: e.target.value })}
-                                                autoFocus={field === 'NOMBRE Y APELLIDO'}
-                                                style={{ padding: '8px', fontSize: '16px' }}
-                                            />
-                                        )}
-                                    </label>
-                                ))}
+                                        );
+                                    } else {
+                                        control = <input type={field === 'HORA' ? 'time' : 'text'} value={val}
+                                                         onChange={e => set(e.target.value)} style={estilo}
+                                                         autoFocus={!form.id && field === 'NOMBRE Y APELLIDO'} />;
+                                    }
+                                    return (
+                                        <label key={field} style={{
+                                            display: 'flex', flexDirection: 'column', gap: '4px', fontWeight: 'bold', fontSize: '0.85rem',
+                                            gridColumn: largo ? '1 / -1' : undefined
+                                        }}>
+                                            {label(field)}{field === 'NOMBRE Y APELLIDO' && ' *'}
+                                            {control}
+                                        </label>
+                                    );
+                                })}
                             </div>
-                            <div style={{ display: 'flex', gap: '12px', marginTop: '1.5rem' }}>
-                                <button
-                                    type="submit"
-                                    style={{
-                                        flex: 1, padding: '12px', fontSize: '1rem', fontWeight: 'bold',
-                                        backgroundColor: '#22c55e', color: 'white',
-                                        border: 'none', borderRadius: '8px', cursor: 'pointer'
-                                    }}
-                                >
-                                    GUARDAR
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => setShowAddForm(false)}
-                                    className="btn-cancel"
-                                    style={{ flex: 1, padding: '12px', fontSize: '1rem', borderRadius: '8px', cursor: 'pointer' }}
-                                >
+                            <div style={{ display: 'flex', gap: '12px', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+                                <button type="submit" style={{ ...btn('#22c55e'), flex: 1, padding: '12px', fontSize: '1rem' }}>GUARDAR</button>
+                                {form.id && (
+                                    <button type="button" onClick={borrar} style={{ ...btn('#dc2626'), flex: 1, padding: '12px', fontSize: '1rem' }}>
+                                        BORRAR
+                                    </button>
+                                )}
+                                <button type="button" onClick={() => setForm(null)} className="btn-cancel"
+                                        style={{ flex: 1, padding: '12px', fontSize: '1rem', borderRadius: '8px', cursor: 'pointer' }}>
                                     CANCELAR
                                 </button>
                             </div>
@@ -612,24 +489,22 @@ function ReceptionView({ socket, patients, activePatient, history, quirofano }) 
             )}
 
             {/* Modal — paciente en curso */}
-            {showModal && (
+            {pendingPatient && (
                 <div className="modal-overlay">
                     <div className="modal-content">
                         <h2>⚠️ Cirugía en curso</h2>
-                        <p>Hay un paciente proyectado actualmente.</p>
+                        <p>En pantalla está <strong>{activa?.nombre}</strong>.</p>
                         <p>¿Qué desea hacer?</p>
                         <div className="modal-actions">
                             <button className="btn-finalize" onClick={handleFinalizeCurrent}>
                                 FINALIZAR ACTUAL
                                 <small>(Borrar pantalla)</small>
                             </button>
-                            <button className="btn-change" onClick={handleChangePatient}>
+                            <button className="btn-change" onClick={() => sendToScreen(pendingPatient)}>
                                 CAMBIAR PACIENTE
-                                <small>(Proyectar nuevo)</small>
+                                <small>(Proyectar a {pendingPatient.nombre})</small>
                             </button>
-                            <button className="btn-cancel" onClick={closeModal}>
-                                CANCELAR
-                            </button>
+                            <button className="btn-cancel" onClick={() => setPendingPatient(null)}>CANCELAR</button>
                         </div>
                     </div>
                 </div>

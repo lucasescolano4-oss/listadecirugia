@@ -14,9 +14,9 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor:  ['react', 'react-dom', 'react-router-dom'],
-          socket:  ['socket.io-client'],
-          xlsx:    ['xlsx'],
+          vendor:   ['react', 'react-dom', 'react-router-dom'],
+          supabase: ['@supabase/supabase-js'],
+          xlsx:     ['xlsx'],
         },
       },
     },
@@ -24,13 +24,5 @@ export default defineConfig({
 
   server: {
     port: 5173,
-    // Proxy en desarrollo: evita CORS al llamar al servidor local
-    proxy: {
-      '/socket.io': {
-        target: 'http://localhost:3000',
-        ws: true,
-        changeOrigin: true,
-      },
-    },
   },
 })

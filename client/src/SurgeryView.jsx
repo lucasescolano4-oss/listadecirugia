@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { sendAction, actionErrorMessage } from './sendAction';
+import { supabase } from './supabase';
+import { valor, label, duracion } from './config';
 
-function SurgeryView({ socket, activePatient }) {
-    const patient = activePatient;
-
+function SurgeryView({ institucion, ui, quirofano, activa, puedeEditar, recargar }) {
     useEffect(() => {
         document.body.classList.add('surgery-mode');
         return () => document.body.classList.remove('surgery-mode');
@@ -21,7 +20,7 @@ function SurgeryView({ socket, activePatient }) {
                 const newLock = await navigator.wakeLock.request('screen');
                 if (active) lock = newLock;
                 else newLock.release().catch(() => {}); // se salió de la vista mientras se pedía
-            } catch (e) { /* no soportado o rechazado: se usa la configuración de la tablet */ }
+            } catch { /* no soportado o rechazado: se usa la configuración de la tablet */ }
         };
         requestLock();
         document.addEventListener('visibilitychange', requestLock);
@@ -32,115 +31,76 @@ function SurgeryView({ socket, activePatient }) {
         };
     }, []);
 
-    const [timer, setTimer] = useState(0);
-
+    const [now, setNow] = useState(() => Date.now());
     useEffect(() => {
-        let interval = null;
+        if (!activa?.inicio) return;
+        const interval = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(interval);
+    }, [activa?.inicio]);
 
-        if (patient && patient.startTime) {
-            const updateTimer = () => {
-                const start = new Date(patient.startTime).getTime();
-                setTimer(Math.max(0, Math.floor((Date.now() - start) / 1000)));
-            };
-            updateTimer();
-            interval = setInterval(updateTimer, 1000);
-        } else {
-            setTimer(0);
-        }
-
-        return () => { if (interval) clearInterval(interval); };
-    }, [patient]);
-
-    const formatTime = (seconds) => {
-        const hh = Math.floor(seconds / 3600);
-        const mm = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
-        const ss = (seconds % 60).toString().padStart(2, '0');
-        return hh > 0 ? `${hh.toString().padStart(2, '0')}:${mm}:${ss}` : `${mm}:${ss}`;
+    const handleFinish = async () => {
+        if (!window.confirm('¿Está seguro de finalizar la cirugía actual?')) return;
+        const { error } = await supabase.rpc('qx_finalizar', { p_institucion: institucion.id, p_quirofano: quirofano.numero });
+        if (error) alert('No se pudo finalizar: ' + error.message + '\nRevisá la conexión y reintentá.');
+        recargar();
     };
 
-    const handleFinish = () => {
-        if (window.confirm('¿Está seguro de finalizar la cirugía actual?')) {
-            sendAction(socket, 'clear_patient').catch(err => alert(actionErrorMessage(err)));
-        }
-    };
-
-    if (!patient) {
+    if (!activa) {
         return (
             <div className="waiting-screen">
                 <div className="waiting-content">
                     <span className="waiting-icon">🏥</span>
                     <p>ESPERANDO DATOS…</p>
-                    <small>Sistema de Monitoreo de Quirófano</small>
+                    <small>{institucion.nombre} · {quirofano.nombre}</small>
                 </div>
             </div>
         );
     }
 
-    const nombre = patient['NOMBRE Y APELLIDO'] || '-';
-    const ojo    = patient['OJO']               || '-';
-    const lio    = patient['LIO']               || '-';
-    const edad   = patient['EDAD']              || '-';
-    const cata   = patient['CATA']              || '-';
-    const dil    = patient['DIL']               || '-';
-    const os     = patient['OS']                || '-';
-    const app    = patient['APP']               || '-';
-    const nro    = patient['N°']                || '-';
+    const v = (col) => valor(activa, col) || '-';
 
     return (
         <div className="surgery-grid">
-            {/* SECCIÓN SUPERIOR: nombre, ojo, lio */}
+            {/* SECCIÓN SUPERIOR: nombre y datos principales */}
             <div className="section-large">
-                <div className="main-name">{nombre}</div>
+                <div className="main-name">{activa.nombre}</div>
                 <div className="sub-large-container">
-                    <div className="data-item">
-                        <span className="label">OJO</span>
-                        <span className="sub-large highlight-ojo">{ojo}</span>
-                    </div>
-                    <div className="data-item">
-                        <span className="label">LIO</span>
-                        <span className="sub-large">{lio}</span>
-                    </div>
+                    {ui.pantalla.grande.map((col, i) => (
+                        <div className="data-item" key={col}>
+                            <span className="label">{label(col)}</span>
+                            <span className={`sub-large${i === 0 ? ' highlight-ojo' : ''}`}>{v(col)}</span>
+                        </div>
+                    ))}
                 </div>
             </div>
 
-            {/* SECCIÓN MEDIA: edad, cata, dil */}
+            {/* SECCIÓN MEDIA */}
             <div className="section-medium">
-                <div className="data-item">
-                    <span className="label">EDAD</span>
-                    <span className="val-medium">{edad}</span>
-                </div>
-                <div className="data-item">
-                    <span className="label">CATA</span>
-                    <span className="val-medium">{cata}</span>
-                </div>
-                <div className="data-item">
-                    <span className="label">DIL</span>
-                    <span className="val-medium">{dil}</span>
-                </div>
+                {ui.pantalla.media.map(col => (
+                    <div className="data-item" key={col}>
+                        <span className="label">{label(col)}</span>
+                        <span className="val-medium">{v(col)}</span>
+                    </div>
+                ))}
             </div>
 
-            {/* SECCIÓN INFERIOR: obra social, antecedentes */}
+            {/* SECCIÓN INFERIOR */}
             <div className="section-small">
-                <div className="data-item">
-                    <span className="label">OBRA SOCIAL</span>
-                    <span className="val-small">
-                        {os}
-                        <span style={{ marginLeft: '15px', color: '#666' }}>N°: {nro}</span>
-                    </span>
-                </div>
-                <div className="data-item">
-                    <span className="label">ANTECEDENTES (APP)</span>
-                    <span className="val-small">{app}</span>
-                </div>
+                {ui.pantalla.chica.map(col => (
+                    <div className="data-item" key={col}>
+                        <span className="label">{label(col)}</span>
+                        <span className="val-small">{v(col)}</span>
+                    </div>
+                ))}
             </div>
 
             {/* FOOTER: botón finalizar + timer */}
             <div className="surgery-footer">
                 <div className="footer-left">
-                    <button className="finish-button" onClick={handleFinish}>FINALIZAR</button>
+                    {puedeEditar && <button className="finish-button" onClick={handleFinish}>FINALIZAR</button>}
                 </div>
                 <div className="timer-container">
-                    <div className="timer">{formatTime(timer)}</div>
+                    <div className="timer">{duracion(activa.inicio, now)}</div>
                 </div>
                 <div /> {/* spacer para que el reloj global quede a la derecha */}
             </div>
