@@ -81,7 +81,7 @@ export function Login() {
 }
 
 // ── Elegir institución (Privado / HZE) ──────────────────────────────────────────
-const ROL_TEXTO = { admin: 'Administrador', editor: 'Puede cargar y modificar', lector: 'Solo lectura' };
+const ROL_TEXTO = { admin: 'Administrador', editor: 'Puede cargar y modificar', operador: 'Proyecta y finaliza', lector: 'Solo lectura' };
 
 export function ElegirInstitucion({ membresias, onElegir }) {
     return (

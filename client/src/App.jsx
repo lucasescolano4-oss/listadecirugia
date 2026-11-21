@@ -77,9 +77,10 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
     const ui          = uiDe(institucion.id);
     const quirofanos  = useMemo(() => quirofanosDe(institucion), [institucion]);
     const puedeEditar = rol === 'admin' || rol === 'editor';
+    const puedeOperar = puedeEditar || rol === 'operador';   // proyectar y finalizar
     const claveVista  = `qx_vista_${institucion.id}`;
     // Pantalla de inicio: quien edita arranca en la Lista del día; quien solo ve, en la Vista general
-    const inicio      = puedeEditar ? 'lista' : 'general';
+    const inicio      = puedeOperar ? 'lista' : 'general';
 
     // Fecha: hoy por defecto; si nadie la cambió a mano, pasa sola al día siguiente a medianoche
     const [fecha,  setFechaState] = useState(hoyISO);
@@ -141,7 +142,7 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
                 {avisoConexion}
                 <ReceptionView
                     institucion={institucion} ui={ui} quirofano={null} quirofanos={quirofanos}
-                    rows={ordenar(rows)} puedeEditar={puedeEditar} fecha={fecha} setFecha={setFecha}
+                    rows={ordenar(rows)} puedeEditar={puedeEditar} puedeOperar={puedeOperar} fecha={fecha} setFecha={setFecha}
                     recargar={recargar} onEntrarQuirofano={(q) => entrarQuirofano(q, '/surgery')}
                     encabezado={
                         <>
@@ -191,12 +192,12 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
                     <Routes>
                         <Route path="/" element={
                             <ReceptionView institucion={institucion} ui={ui} quirofano={quirofano} quirofanos={quirofanos}
-                                           rows={delQuirofano} puedeEditar={puedeEditar}
+                                           rows={delQuirofano} puedeEditar={puedeEditar} puedeOperar={puedeOperar}
                                            fecha={fecha} setFecha={setFecha} recargar={recargar} />
                         } />
                         <Route path="/surgery" element={
                             <SurgeryView institucion={institucion} ui={ui} quirofano={quirofano}
-                                         activa={activa} puedeEditar={puedeEditar} recargar={recargar} />
+                                         activa={activa} puedeOperar={puedeOperar} recargar={recargar} />
                         } />
                         <Route path="/history" element={
                             <HistoryView ui={ui} rows={delQuirofano} fecha={fecha}

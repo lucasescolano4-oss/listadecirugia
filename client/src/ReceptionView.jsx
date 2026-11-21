@@ -56,7 +56,7 @@ const btn = (bg) => ({
 //  · con `quirofano`: la lista de ese quirófano (pantalla INGRESO)
 //  · sin `quirofano`: la "Lista del día" de toda la institución, agrupada por quirófano,
 //    con una sección "Sin quirófano" arriba para los que falta asignar
-function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEditar, fecha, setFecha, recargar, encabezado, onEntrarQuirofano }) {
+function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEditar, puedeOperar, fecha, setFecha, recargar, encabezado, onEntrarQuirofano }) {
     const modoDia = !quirofano;
     const [searchTerm,     setSearchTerm]     = useState('');
     const [hideCompleted,  setHideCompleted]  = useState(true);
@@ -244,8 +244,8 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
     // Cada paciente va a la pantalla de SU quirófano
     const projectPatient = (r) => {
         if (!asignado(r)) {
-            showToast('error', `Asigná un quirófano a ${r.nombre} antes de proyectarlo.`);
-            abrirEditar(r);
+            showToast('error', puedeEditar ? `Asigná un quirófano a ${r.nombre} antes de proyectarlo.` : `${r.nombre} no tiene quirófano asignado: pedile a quien carga la lista que lo asigne.`);
+            if (puedeEditar) abrirEditar(r);
             return;
         }
         const activa = activaDe(r.quirofano);
@@ -279,7 +279,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                     const isActive  = r.estado === 'en_curso';
                     const isDone    = r.estado === 'finalizada';
                     const sinQ      = !asignado(r);
-                    const clickable = puedeEditar && !isDone && !sinQ;
+                    const clickable = puedeOperar && !isDone && !sinQ;
                     return (
                         <tr key={r.id} onClick={() => clickable && projectPatient(r)}
                             style={{
@@ -299,7 +299,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                                         <option value="">Asignar Q…</option>
                                         {quirofanos.map(q => <option key={q.numero} value={q.numero}>Q{q.numero}</option>)}
                                     </select>
-                                ) : puedeEditar ? (
+                                ) : puedeOperar ? (
                                     <button onClick={e => { e.stopPropagation(); projectPatient(r); }}>PROYECTAR</button>
                                 ) : (
                                     <span style={{ color: '#64748b' }}>{sinQ ? 'Sin quirófano' : 'Pendiente'}</span>
@@ -377,7 +377,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                 </div>
             ) : (
                 <div className="upload-section" style={{ color: '#475569' }}>
-                    👁️ Cuenta de solo lectura — {pendientes} pendientes · {rows.length} en total
+                    {puedeOperar ? "🎛️ Podés proyectar y finalizar cirugías" : "👁️ Cuenta de solo lectura"} — {pendientes} pendientes · {rows.length} en total
                 </div>
             )}
 

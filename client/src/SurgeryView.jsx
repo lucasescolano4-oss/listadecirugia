@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 import { valor, label, duracion } from './config';
 
-function SurgeryView({ institucion, ui, quirofano, activa, puedeEditar, recargar }) {
+function SurgeryView({ institucion, ui, quirofano, activa, puedeOperar, recargar }) {
     useEffect(() => {
         document.body.classList.add('surgery-mode');
         return () => document.body.classList.remove('surgery-mode');
@@ -97,7 +97,7 @@ function SurgeryView({ institucion, ui, quirofano, activa, puedeEditar, recargar
             {/* FOOTER: botón finalizar + timer */}
             <div className="surgery-footer">
                 <div className="footer-left">
-                    {puedeEditar && <button className="finish-button" onClick={handleFinish}>FINALIZAR</button>}
+                    {puedeOperar && <button className="finish-button" onClick={handleFinish}>FINALIZAR</button>}
                 </div>
                 <div className="timer-container">
                     <div className="timer">{duracion(activa.inicio, now)}</div>
