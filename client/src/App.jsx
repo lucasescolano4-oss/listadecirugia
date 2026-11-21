@@ -31,16 +31,18 @@ function App() {
     // Instituciones a las que tiene acceso y con qué rol
     useEffect(() => {
         if (!userId) return;
-        supabase
-            .from('qx_miembros')
-            .select('rol, institucion:qx_instituciones(id, nombre, quirofanos, columnas_extra)')
-            .eq('user_id', userId)
-            .then(({ data, error }) => {
-                const membresias = error ? [] : data
-                    .filter(m => m.institucion)
-                    .sort((a, b) => a.institucion.nombre.localeCompare(b.institucion.nombre));
-                setPermisos({ userId, membresias, error: !!error });
-            });
+        (async () => {
+            // Si un administrador invitó a este email, las invitaciones se convierten en permisos
+            await supabase.rpc('qx_reclamar_invitaciones');
+            const { data, error } = await supabase
+                .from('qx_miembros')
+                .select('rol, institucion:qx_instituciones(id, nombre, quirofanos, columnas_extra)')
+                .eq('user_id', userId);
+            const membresias = error ? [] : data
+                .filter(m => m.institucion)
+                .sort((a, b) => a.institucion.nombre.localeCompare(b.institucion.nombre));
+            setPermisos({ userId, membresias, error: !!error });
+        })();
     }, [userId]);
 
     const membresias = permisos.userId === userId ? permisos.membresias : null;
@@ -66,6 +68,7 @@ function App() {
             institucion={membresia.institucion}
             rol={membresia.rol}
             email={session.user.email}
+            miId={userId}
             puedeCambiarInstitucion={membresias.length > 1}
             onCambiarInstitucion={() => elegir(null)}
         />
@@ -73,7 +76,7 @@ function App() {
 }
 
 // ── Espacio de trabajo de una institución ───────────────────────────────────────
-function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarInstitucion }) {
+function Espacio({ institucion, rol, email, miId, puedeCambiarInstitucion, onCambiarInstitucion }) {
     const ui          = uiDe(institucion.id);
     const quirofanos  = useMemo(() => quirofanosDe(institucion), [institucion]);
     const puedeEditar = rol === 'admin' || rol === 'editor';
@@ -123,7 +126,7 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
     );
 
     const menu = (oscuro, arriba = false) => (
-        <MenuCuenta email={email} rol={rol} institucion={institucion.nombre} oscuro={oscuro} arriba={arriba}
+        <MenuCuenta email={email} miId={miId} rol={rol} institucionObj={institucion} oscuro={oscuro} arriba={arriba}
                     puedeCambiarInstitucion={puedeCambiarInstitucion} onCambiarInstitucion={onCambiarInstitucion} />
     );
 

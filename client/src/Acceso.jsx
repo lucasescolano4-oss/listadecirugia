@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from './supabase';
+import Usuarios from './Usuarios';
 
 const pantalla = {
     minHeight: '100vh', display: 'flex', flexDirection: 'column',
@@ -185,9 +186,11 @@ export function CambiarPassword({ onCerrar }) {
 }
 
 // ── Menú de cuenta (email, cambiar contraseña, institución, salir) ──────────────
-export function MenuCuenta({ email, rol, institucion, puedeCambiarInstitucion, onCambiarInstitucion, oscuro, arriba }) {
+export function MenuCuenta({ email, miId, rol, institucionObj, puedeCambiarInstitucion, onCambiarInstitucion, oscuro, arriba }) {
     const [abierto,  setAbierto]  = useState(false);
     const [password, setPassword] = useState(false);
+    const [usuarios, setUsuarios] = useState(false);
+    const institucion = institucionObj.nombre;
 
     const item = {
         display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none',
@@ -214,12 +217,16 @@ export function MenuCuenta({ email, rol, institucion, puedeCambiarInstitucion, o
                         {puedeCambiarInstitucion && (
                             <button style={item} onClick={() => { setAbierto(false); onCambiarInstitucion(); }}>🔁 Cambiar institución</button>
                         )}
+                        {rol === 'admin' && (
+                            <button style={item} onClick={() => { setAbierto(false); setUsuarios(true); }}>👥 Usuarios e invitaciones</button>
+                        )}
                         <button style={item} onClick={() => { setAbierto(false); setPassword(true); }}>🔑 Cambiar contraseña</button>
                         <button style={{ ...item, color: '#dc2626' }} onClick={() => supabase.auth.signOut()}>⏻ Cerrar sesión</button>
                     </div>
                 </>
             )}
             {password && <CambiarPassword onCerrar={() => setPassword(false)} />}
+            {usuarios && <Usuarios institucion={institucionObj} miId={miId} onCerrar={() => setUsuarios(false)} />}
         </div>
     );
 }
