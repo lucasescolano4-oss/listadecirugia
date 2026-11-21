@@ -53,7 +53,7 @@ function TarjetaQuirofano({ q, ui, rows, now, onElegir }) {
     );
 }
 
-function VistaGeneral({ institucion, ui, quirofanos, rows, fecha, setFecha, cargando, error, conectado, onElegir, menu }) {
+function VistaGeneral({ institucion, ui, quirofanos, rows, fecha, setFecha, cargando, error, conectado, onElegir, menu, botonLista }) {
     const [now, setNow] = useState(() => Date.now());
 
     // Un solo reloj para los cronómetros de todas las salas
@@ -74,6 +74,7 @@ function VistaGeneral({ institucion, ui, quirofanos, rows, fecha, setFecha, carg
                     <span className="overview-conn" style={{ color: conectado ? '#22c55e' : '#ef4444' }}>
                         {conectado ? '● En vivo' : '● Sin conexión'}
                     </span>
+                    {botonLista}
                     {menu}
                 </div>
             </header>

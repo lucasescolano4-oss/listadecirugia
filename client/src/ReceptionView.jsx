@@ -52,7 +52,12 @@ const btn = (bg) => ({
     color: 'white', border: 'none', borderRadius: '8px'
 });
 
-function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, fecha, setFecha, recargar }) {
+// Dos modos:
+//  · con `quirofano`: la lista de ese quirófano (pantalla INGRESO)
+//  · sin `quirofano`: la "Lista del día" de toda la institución, agrupada por quirófano,
+//    con una sección "Sin quirófano" arriba para los que falta asignar
+function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEditar, fecha, setFecha, recargar, encabezado, onEntrarQuirofano }) {
+    const modoDia = !quirofano;
     const [searchTerm,     setSearchTerm]     = useState('');
     const [hideCompleted,  setHideCompleted]  = useState(true);
     const [pendingPatient, setPendingPatient] = useState(null);   // modal "hay una cirugía en curso"
@@ -91,16 +96,27 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
             .some(v => String(v ?? '').toLowerCase().includes(term)));
     }
     const pendientes = rows.filter(r => r.estado === 'pendiente').length;
+    const ambito     = modoDia ? institucion.nombre : quirofano.nombre;
+
+    // Quirófano válido para esta institución, o null (= sin asignar)
+    const quirofanoValido = (n) => (n >= 1 && n <= institucion.quirofanos ? n : null);
+    const asignado        = (r) => quirofanoValido(r.quirofano) !== null;
+    const activaDe        = (n) => rows.find(r => r.estado === 'en_curso' && r.quirofano === n) || null;
+
+    // Las consultas de borrado se acotan al quirófano en modo quirófano, o a todo el día en modo lista
+    const delAmbito = (query) => {
+        query = query.eq('institucion_id', institucion.id).eq('fecha', fecha);
+        return modoDia ? query : query.eq('quirofano', quirofano.numero);
+    };
 
     // ── Vaciar el día ─────────────────────────────────────────────────────────
     const handleVaciar = () => {
         if (rows.length === 0) return;
         if (!window.confirm(
-            `⚠️ VACIAR LISTA DEL DÍA\n\n${quirofano.nombre} — ${fechaLarga(fecha)}\n\n` +
+            `⚠️ VACIAR LISTA DEL DÍA\n\n${ambito} — ${fechaLarga(fecha)}\n\n` +
             `Se van a borrar las ${rows.length} cirugías de este día (pendientes, en curso y finalizadas).\n\n¿Confirmar?`
         )) return;
-        run('Lista del día vaciada', () => supabase.from('qx_cirugias').delete()
-            .eq('institucion_id', institucion.id).eq('fecha', fecha).eq('quirofano', quirofano.numero));
+        run('Lista del día vaciada', () => delAmbito(supabase.from('qx_cirugias').delete()));
     };
 
     // ── Cargar Excel → vista previa ───────────────────────────────────────────
@@ -124,7 +140,7 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
     // ── Pegar desde Excel → vista previa ──────────────────────────────────────
     const handlePaste = (e) => {
         e.preventDefault();
-        const pacientes = parsePastedRows(e.clipboardData.getData('text'), ui.columnas);
+        const pacientes = parsePastedRows(e.clipboardData.getData('text'), ui.pegado);
         if (pacientes.length === 0) {
             alert('No se detectaron filas. Copiá las celdas en Excel (Ctrl+C) y pegalas acá (Ctrl+V).');
             return;
@@ -134,29 +150,34 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
 
     const previewRows    = preview?.rows || [];
     const previewValidas = previewRows.filter(p => String(p['NOMBRE Y APELLIDO'] ?? '').trim());
-    const previewColumns = [...new Set([...ui.columnas, ...previewRows.flatMap(Object.keys)])];
+    const previewColumns = [...new Set([...ui.pegado, ...previewRows.flatMap(Object.keys)])];
 
     const confirmarPreview = async (modo) => {
         if (previewValidas.length === 0) return;
         const base  = modo === 'reemplazar' ? 0 : Math.max(0, ...rows.map(r => r.orden + 1));
-        const filas = previewValidas.map((p, i) => ({
-            ...aFila(p, { institucion_id: institucion.id, fecha, quirofano: quirofano.numero }),
-            orden: base + i
-        }));
-        const enOtros = filas.filter(f => f.quirofano !== quirofano.numero).length;
+        const filas = previewValidas.map((p, i) => {
+            const fila = aFila(p, { institucion_id: institucion.id, fecha, quirofano: quirofano?.numero ?? null });
+            return { ...fila, quirofano: quirofanoValido(fila.quirofano), orden: base + i };
+        });
+        const sinQ    = filas.filter(f => f.quirofano === null).length;
+        const enOtros = modoDia ? 0 : filas.filter(f => f.quirofano !== quirofano.numero).length;
 
         if (modo === 'reemplazar' && pendientes > 0 && !window.confirm(
-            `Esto reemplaza los ${pendientes} pacientes pendientes de ${quirofano.nombre} por los ${filas.length} nuevos.\n\n¿Confirmar?`
+            `Esto reemplaza los ${pendientes} pacientes pendientes de ${ambito} por los ${filas.length} nuevos.\n\n¿Confirmar?`
         )) return;
 
+        const detalle = [
+            enOtros && `${enOtros} en otros quirófanos`,
+            sinQ    && `${sinQ} sin quirófano`
+        ].filter(Boolean).join(', ');
+
         const ok = await run(
-            `${filas.length} pacientes cargados` + (enOtros ? ` (${enOtros} en otros quirófanos)` : ''),
+            `${filas.length} pacientes cargados` + (detalle ? ` (${detalle})` : ''),
             async () => {
                 // Primero insertar y recién después borrar los viejos: si falla, no se pierde nada
                 const ins = await supabase.from('qx_cirugias').insert(filas).select('id');
                 if (ins.error || modo !== 'reemplazar') return ins;
-                return supabase.from('qx_cirugias').delete()
-                    .eq('institucion_id', institucion.id).eq('fecha', fecha).eq('quirofano', quirofano.numero)
+                return delAmbito(supabase.from('qx_cirugias').delete())
                     .eq('estado', 'pendiente')
                     .not('id', 'in', `(${ins.data.map(r => r.id).join(',')})`);
             }
@@ -166,7 +187,7 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
 
     // ── Agregar / editar una cirugía ──────────────────────────────────────────
     const abrirNuevo = () => setForm({
-        valores: { ...Object.fromEntries(columnasForm.map(c => [c, ''])), FECHA: fecha, QUIROFANO: String(quirofano.numero) }
+        valores: { ...Object.fromEntries(columnasForm.map(c => [c, ''])), FECHA: fecha, QUIROFANO: quirofano ? String(quirofano.numero) : '' }
     });
 
     const abrirEditar = (r) => setForm({
@@ -179,7 +200,8 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
         const { FECHA, QUIROFANO, ...campos } = form.valores;
         if (!String(campos['NOMBRE Y APELLIDO'] || '').trim()) return alert('El nombre y apellido es obligatorio.');
 
-        const fila = aFila({ ...campos, QUIROFANO }, { institucion_id: institucion.id, fecha: FECHA, quirofano: quirofano.numero });
+        const fila = aFila({ ...campos, QUIROFANO }, { institucion_id: institucion.id, fecha: FECHA, quirofano: null });
+        fila.quirofano = quirofanoValido(fila.quirofano);
         let ok;
         if (form.id) {
             // Al editar, un campo vacío tiene que borrar el valor anterior
@@ -212,27 +234,126 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
         run(null, () => supabase.from('qx_cirugias').update({ extra: { ...r.extra, OJO: e.target.value } }).eq('id', r.id));
     };
 
+    // Asignar quirófano rápido (sección "Sin quirófano")
+    const asignarQuirofano = (r, n) => {
+        if (!n) return;
+        run(`${r.nombre} → Quirófano ${n}`, () => supabase.from('qx_cirugias').update({ quirofano: Number(n) }).eq('id', r.id));
+    };
+
     // ── Proyectar ─────────────────────────────────────────────────────────────
+    // Cada paciente va a la pantalla de SU quirófano
     const projectPatient = (r) => {
+        if (!asignado(r)) {
+            showToast('error', `Asigná un quirófano a ${r.nombre} antes de proyectarlo.`);
+            abrirEditar(r);
+            return;
+        }
+        const activa = activaDe(r.quirofano);
         if (activa && activa.id !== r.id) setPendingPatient(r);
         else sendToScreen(r);
     };
 
     const sendToScreen = (r) => {
         setPendingPatient(null);
-        run(`En pantalla: ${r.nombre}`, () => supabase.rpc('qx_proyectar', { p_id: r.id }));
+        run(`En pantalla de Q${r.quirofano}: ${r.nombre}`, () => supabase.rpc('qx_proyectar', { p_id: r.id }));
     };
 
     const handleFinalizeCurrent = () => {
+        const n = pendingPatient.quirofano;
         setPendingPatient(null);
-        run('Cirugía finalizada', () => supabase.rpc('qx_finalizar', { p_institucion: institucion.id, p_quirofano: quirofano.numero }));
+        run('Cirugía finalizada', () => supabase.rpc('qx_finalizar', { p_institucion: institucion.id, p_quirofano: n }));
     };
+
+    // ── Tabla ─────────────────────────────────────────────────────────────────
+    const renderTabla = (filas) => (
+        <table>
+            <thead>
+                <tr>
+                    <th>Acción</th>
+                    {ui.columnas.map(c => <th key={c}>{label(c)}</th>)}
+                    {puedeEditar && <th></th>}
+                </tr>
+            </thead>
+            <tbody>
+                {filas.map(r => {
+                    const isActive  = r.estado === 'en_curso';
+                    const isDone    = r.estado === 'finalizada';
+                    const sinQ      = !asignado(r);
+                    const clickable = puedeEditar && !isDone && !sinQ;
+                    return (
+                        <tr key={r.id} onClick={() => clickable && projectPatient(r)}
+                            style={{
+                                backgroundColor: isActive ? '#e0f2fe' : (isDone ? '#f0fdf4' : 'transparent'),
+                                borderLeft: isActive ? '4px solid #0ea5e9' : (isDone ? '4px solid #22c55e' : 'none'),
+                                cursor: clickable ? 'pointer' : 'default',
+                                opacity: isDone ? 0.7 : 1
+                            }}>
+                            <td onClick={e => sinQ && e.stopPropagation()}>
+                                {isDone ? (
+                                    <span style={{ color: '#22c55e', fontWeight: 'bold' }}>✅ FINALIZADO</span>
+                                ) : isActive ? (
+                                    <span style={{ color: '#0ea5e9', fontWeight: 'bold' }}>● EN CURSO</span>
+                                ) : sinQ && puedeEditar ? (
+                                    <select value="" onChange={e => asignarQuirofano(r, e.target.value)}
+                                            style={{ padding: '5px', fontWeight: 700, borderColor: '#d97706' }}>
+                                        <option value="">Asignar Q…</option>
+                                        {quirofanos.map(q => <option key={q.numero} value={q.numero}>Q{q.numero}</option>)}
+                                    </select>
+                                ) : puedeEditar ? (
+                                    <button onClick={e => { e.stopPropagation(); projectPatient(r); }}>PROYECTAR</button>
+                                ) : (
+                                    <span style={{ color: '#64748b' }}>{sinQ ? 'Sin quirófano' : 'Pendiente'}</span>
+                                )}
+                            </td>
+                            {ui.columnas.map(c => (
+                                c === 'OJO' && tieneOjo && puedeEditar ? (
+                                    <td key={c} onClick={e => e.stopPropagation()}>
+                                        <select value={String(valor(r, 'OJO')).toUpperCase().trim()}
+                                                onChange={e => handleOjoChange(e, r)} style={{ padding: '5px' }} disabled={isDone}>
+                                            <option value="">ELEGIR</option>
+                                            <option value="DERECHO">DERECHO</option>
+                                            <option value="IZQUIERDO">IZQUIERDO</option>
+                                        </select>
+                                    </td>
+                                ) : (
+                                    <td key={c}>{valor(r, c)}</td>
+                                )
+                            ))}
+                            {puedeEditar && (
+                                <td onClick={e => e.stopPropagation()}>
+                                    <button onClick={() => abrirEditar(r)} title="Editar">✏️</button>
+                                </td>
+                            )}
+                        </tr>
+                    );
+                })}
+            </tbody>
+        </table>
+    );
+
+    // Bloque con título de color (secciones de la Lista del día)
+    const seccion = ({ key, color, titulo, info, accion, children }) => (
+        <section key={key} style={{ marginBottom: '1.25rem' }}>
+            <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap',
+                backgroundColor: color, color: 'white', padding: '8px 14px', borderRadius: '10px 10px 0 0', fontWeight: 800
+            }}>
+                <span>{titulo}{info && <span style={{ fontWeight: 600, opacity: 0.9, marginLeft: '10px', fontSize: '0.9rem' }}>{info}</span>}</span>
+                {accion}
+            </div>
+            <div className="table-container" style={{ marginTop: 0, borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
+                {children}
+            </div>
+        </section>
+    );
+
+    const sinQuirofano = lista.filter(r => !asignado(r));
 
     // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div className="reception-container">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '1rem' }}>
-                <h1 style={{ margin: 0 }}>Recepción — {quirofano.nombre}</h1>
+                {encabezado || <h1 style={{ margin: 0 }}>{modoDia ? `Lista del día — ${institucion.nombre}` : `Recepción — ${quirofano.nombre}`}</h1>}
                 {puedeEditar && rows.length > 0 && (
                     <button onClick={handleVaciar} style={{ ...btn('#dc2626'), padding: '10px 20px', fontSize: '0.95rem' }}>
                         🗑️ VACIAR LISTA DEL DÍA
@@ -273,72 +394,47 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
                 </label>
             </div>
 
-            <div className="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Acción</th>
-                            {ui.columnas.map(c => <th key={c}>{label(c)}</th>)}
-                            {puedeEditar && <th></th>}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {lista.map(r => {
-                            const isActive = r.estado === 'en_curso';
-                            const isDone   = r.estado === 'finalizada';
-                            const clickable = puedeEditar && !isDone;
-                            return (
-                                <tr key={r.id} onClick={() => clickable && projectPatient(r)}
-                                    style={{
-                                        backgroundColor: isActive ? '#e0f2fe' : (isDone ? '#f0fdf4' : 'transparent'),
-                                        borderLeft: isActive ? '4px solid #0ea5e9' : (isDone ? '4px solid #22c55e' : 'none'),
-                                        cursor: clickable ? 'pointer' : 'default',
-                                        opacity: isDone ? 0.7 : 1
-                                    }}>
-                                    <td>
-                                        {isDone ? (
-                                            <span style={{ color: '#22c55e', fontWeight: 'bold' }}>✅ FINALIZADO</span>
-                                        ) : isActive ? (
-                                            <span style={{ color: '#0ea5e9', fontWeight: 'bold' }}>● EN CURSO</span>
-                                        ) : puedeEditar ? (
-                                            <button onClick={e => { e.stopPropagation(); projectPatient(r); }}>PROYECTAR</button>
-                                        ) : (
-                                            <span style={{ color: '#64748b' }}>Pendiente</span>
-                                        )}
-                                    </td>
-                                    {ui.columnas.map(c => (
-                                        c === 'OJO' && tieneOjo && puedeEditar ? (
-                                            <td key={c} onClick={e => e.stopPropagation()}>
-                                                <select value={String(valor(r, 'OJO')).toUpperCase().trim()}
-                                                        onChange={e => handleOjoChange(e, r)} style={{ padding: '5px' }} disabled={isDone}>
-                                                    <option value="">ELEGIR</option>
-                                                    <option value="DERECHO">DERECHO</option>
-                                                    <option value="IZQUIERDO">IZQUIERDO</option>
-                                                </select>
-                                            </td>
-                                        ) : (
-                                            <td key={c}>{valor(r, c)}</td>
-                                        )
-                                    ))}
-                                    {puedeEditar && (
-                                        <td onClick={e => e.stopPropagation()}>
-                                            <button onClick={() => abrirEditar(r)} title="Editar">✏️</button>
-                                        </td>
-                                    )}
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
-                {rows.length === 0 && (
-                    <p style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>
-                        No hay cirugías cargadas para este día en {quirofano.nombre}.
-                    </p>
-                )}
-                {rows.length > 0 && lista.length === 0 && (
-                    <p style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>No hay pacientes que coincidan.</p>
-                )}
-            </div>
+            {rows.length === 0 && (
+                <p style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>
+                    No hay cirugías cargadas para este día en {ambito}.
+                    {puedeEditar && ' Pegá o subí el Excel, o agregá pacientes a mano.'}
+                </p>
+            )}
+            {rows.length > 0 && lista.length === 0 && (
+                <p style={{ padding: '20px', textAlign: 'center', color: '#64748b' }}>No hay pacientes que coincidan.</p>
+            )}
+
+            {modoDia ? (
+                <>
+                    {sinQuirofano.length > 0 && seccion({
+                        key: 'sin-q', color: '#d97706',
+                        titulo: `⚠️ SIN QUIRÓFANO (${sinQuirofano.length})`,
+                        info: puedeEditar ? 'Asignalo con el selector o el lápiz ✏️' : null,
+                        children: renderTabla(sinQuirofano)
+                    })}
+                    {rows.length > 0 && quirofanos.map(q => {
+                        const filasQ = lista.filter(r => r.quirofano === q.numero);
+                        const activa = activaDe(q.numero);
+                        return seccion({
+                            key: q.numero, color: q.color,
+                            titulo: q.nombre.toUpperCase(),
+                            info: activa ? `● En curso: ${activa.nombre}` : `${filasQ.length} paciente(s)`,
+                            accion: (
+                                <button onClick={() => onEntrarQuirofano(q)}
+                                        style={{ background: 'rgba(0,0,0,0.2)', color: 'white', border: 'none', borderRadius: '8px',
+                                                 padding: '4px 12px', fontWeight: 800, cursor: 'pointer' }}>
+                                    PANTALLA ›
+                                </button>
+                            ),
+                            children: filasQ.length > 0
+                                ? renderTabla(filasQ)
+                                : <p style={{ padding: '12px 16px', margin: 0, color: '#64748b' }}>Sin pacientes en este quirófano.</p>
+                        });
+                    })}
+                </>
+            ) : (
+                lista.length > 0 && <div className="table-container">{renderTabla(lista)}</div>
+            )}
 
             {/* Aviso de resultado de la última acción */}
             {toast && (
@@ -362,13 +458,15 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
                             {preview.origen === 'pegado' ? '📋 Pegar desde Excel' : `📄 ${preview.origen}`}
                         </h2>
                         <p style={{ textAlign: 'center', marginTop: 0, color: '#475569' }}>
-                            Se cargan en <strong>{quirofano.nombre}</strong> para el <strong>{fechaLarga(fecha)}</strong>
-                            {' '}(salvo las filas que traigan su propio quirófano).
+                            Se cargan para el <strong>{fechaLarga(fecha)}</strong>.{' '}
+                            {modoDia
+                                ? <>Cada fila va al quirófano de su columna QUIRÓFANO (Q1, Q2…); las que no lo tengan quedan en <strong>Sin quirófano</strong>.</>
+                                : <>Van a <strong>{quirofano.nombre}</strong>, salvo las filas que traigan su propio quirófano.</>}
                         </p>
 
                         {preview.origen === 'pegado' && (
                             <textarea onPaste={handlePaste} value="" onChange={() => {}} autoFocus
-                                placeholder={`Seleccioná las filas en Excel, copiá (Ctrl+C) y pegá acá (Ctrl+V).\n\nPodés incluir la fila de encabezados o solo los datos en este orden:\n${ui.columnas.map(label).join(' · ')}`}
+                                placeholder={`Seleccioná las filas en Excel, copiá (Ctrl+C) y pegá acá (Ctrl+V).\n\nPodés incluir la fila de encabezados o solo los datos en este orden:\n${ui.pegado.map(label).join(' · ')}`}
                                 style={{
                                     width: '100%', minHeight: previewRows.length ? '60px' : '140px',
                                     padding: '12px', fontSize: '15px', boxSizing: 'border-box',
@@ -442,6 +540,7 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
                                     } else if (field === 'QUIROFANO') {
                                         control = (
                                             <select value={val} onChange={e => set(e.target.value)} style={estilo}>
+                                                <option value="">Sin asignar</option>
                                                 {Array.from({ length: institucion.quirofanos }, (_, i) => (
                                                     <option key={i} value={String(i + 1)}>Quirófano {i + 1}</option>
                                                 ))}
@@ -493,7 +592,7 @@ function ReceptionView({ institucion, ui, quirofano, rows, activa, puedeEditar, 
                 <div className="modal-overlay">
                     <div className="modal-content">
                         <h2>⚠️ Cirugía en curso</h2>
-                        <p>En pantalla está <strong>{activa?.nombre}</strong>.</p>
+                        <p>En la pantalla de Quirófano {pendingPatient.quirofano} está <strong>{activaDe(pendingPatient.quirofano)?.nombre}</strong>.</p>
                         <p>¿Qué desea hacer?</p>
                         <div className="modal-actions">
                             <button className="btn-finalize" onClick={handleFinalizeCurrent}>

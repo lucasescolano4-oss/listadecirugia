@@ -77,7 +77,9 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
     const ui          = uiDe(institucion.id);
     const quirofanos  = useMemo(() => quirofanosDe(institucion), [institucion]);
     const puedeEditar = rol === 'admin' || rol === 'editor';
-    const claveQ      = `qx_quirofano_${institucion.id}`;
+    const claveVista  = `qx_vista_${institucion.id}`;
+    // Pantalla de inicio: quien edita arranca en la Lista del día; quien solo ve, en la Vista general
+    const inicio      = puedeEditar ? 'lista' : 'general';
 
     // Fecha: hoy por defecto; si nadie la cambió a mano, pasa sola al día siguiente a medianoche
     const [fecha,  setFechaState] = useState(hoyISO);
@@ -89,9 +91,15 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
         return () => clearInterval(t);
     }, [fecha, fijada]);
 
-    const [numQ, setNumQ] = useState(() => Number(leer(sessionStorage, claveQ)) || null);
-    const quirofano = quirofanos.find(q => q.numero === numQ) || null;
-    const elegirQuirofano = (q) => { guardar(sessionStorage, claveQ, q ? String(q.numero) : null); setNumQ(q ? q.numero : null); };
+    // Vista actual: 'lista', 'general' o el número de quirófano ('1', '2', …)
+    const [vista, setVistaState] = useState(() => leer(sessionStorage, claveVista) || inicio);
+    const setVista = (v) => { guardar(sessionStorage, claveVista, v); setVistaState(v); };
+    const quirofano = quirofanos.find(q => String(q.numero) === vista) || null;
+    // pantalla: '/' (ingreso del quirófano) o '/surgery' (pantalla del quirófano)
+    const entrarQuirofano = (q, pantalla = '/') => {
+        window.location.hash = '#' + pantalla;
+        setVista(String(q.numero));
+    };
 
     const { rows, cargando, error, conectado, recargar } = useCirugias(institucion.id, fecha);
 
@@ -113,10 +121,43 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
         </div>
     );
 
-    const menu = (oscuro) => (
-        <MenuCuenta email={email} rol={rol} institucion={institucion.nombre} oscuro={oscuro}
+    const menu = (oscuro, arriba = false) => (
+        <MenuCuenta email={email} rol={rol} institucion={institucion.nombre} oscuro={oscuro} arriba={arriba}
                     puedeCambiarInstitucion={puedeCambiarInstitucion} onCambiarInstitucion={onCambiarInstitucion} />
     );
+
+    const botonVista = (texto, destino, oscuro) => (
+        <button onClick={() => setVista(destino)}
+                style={{ padding: '8px 14px', fontWeight: 700, borderRadius: '8px', cursor: 'pointer',
+                         background: 'none', border: `1px solid ${oscuro ? '#475569' : '#cbd5e1'}`,
+                         color: oscuro ? '#e2e8f0' : '#0f172a' }}>
+            {texto}
+        </button>
+    );
+
+    if (vista === 'lista') {
+        return (
+            <>
+                {avisoConexion}
+                <ReceptionView
+                    institucion={institucion} ui={ui} quirofano={null} quirofanos={quirofanos}
+                    rows={ordenar(rows)} puedeEditar={puedeEditar} fecha={fecha} setFecha={setFecha}
+                    recargar={recargar} onEntrarQuirofano={(q) => entrarQuirofano(q, '/surgery')}
+                    encabezado={
+                        <>
+                            <h1 style={{ margin: 0 }}>📋 Lista del día — {institucion.nombre}</h1>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <span style={{ color: conectado ? '#16a34a' : '#dc2626', fontWeight: 700, fontSize: '0.85rem' }}>
+                                    {conectado ? '● En vivo' : '● Sin conexión'}
+                                </span>
+                                {botonVista('⊞ Vista general', 'general')}
+                                {menu(false)}
+                            </div>
+                        </>
+                    } />
+            </>
+        );
+    }
 
     if (!quirofano) {
         return (
@@ -124,7 +165,8 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
                 {avisoConexion}
                 <VistaGeneral institucion={institucion} ui={ui} quirofanos={quirofanos} rows={rows}
                               fecha={fecha} setFecha={setFecha} cargando={cargando} error={error}
-                              conectado={conectado} onElegir={elegirQuirofano} menu={menu(true)} />
+                              conectado={conectado} onElegir={(q) => entrarQuirofano(q)} menu={menu(true)}
+                              botonLista={botonVista('📋 Lista del día', 'lista', true)} />
             </>
         );
     }
@@ -148,8 +190,8 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
                 <main className="content">
                     <Routes>
                         <Route path="/" element={
-                            <ReceptionView institucion={institucion} ui={ui} quirofano={quirofano}
-                                           rows={delQuirofano} activa={activa} puedeEditar={puedeEditar}
+                            <ReceptionView institucion={institucion} ui={ui} quirofano={quirofano} quirofanos={quirofanos}
+                                           rows={delQuirofano} puedeEditar={puedeEditar}
                                            fecha={fecha} setFecha={setFecha} recargar={recargar} />
                         } />
                         <Route path="/surgery" element={
@@ -162,14 +204,14 @@ function Espacio({ institucion, rol, email, puedeCambiarInstitucion, onCambiarIn
                         } />
                     </Routes>
                 </main>
-                <Navegacion quirofano={quirofano} conectado={conectado}
-                            onGeneral={() => elegirQuirofano(null)} menu={menu(false)} />
+                <Navegacion quirofano={quirofano} conectado={conectado} inicio={inicio}
+                            onInicio={() => setVista(inicio)} menu={menu(false, true)} />
             </div>
         </HashRouter>
     );
 }
 
-function Navegacion({ quirofano, conectado, onGeneral, menu }) {
+function Navegacion({ quirofano, conectado, inicio, onInicio, menu }) {
     return (
         <nav className="bottom-nav no-print">
             <div className={`connection-status ${conectado ? 'online' : 'offline'}`}
@@ -186,11 +228,13 @@ function Navegacion({ quirofano, conectado, onGeneral, menu }) {
                 <span className="nav-icon">✅</span>
                 <span className="nav-label">FINALIZADO</span>
             </NavLink>
-            <button onClick={onGeneral} className="nav-item no-print"
+            <button onClick={onInicio} className="nav-item no-print"
                     style={{ background: 'none', border: 'none', cursor: 'pointer',
                              borderLeft: `3px solid ${quirofano.color}`, paddingLeft: '8px' }}>
-                <span className="nav-icon">⊞</span>
-                <span className="nav-label" style={{ color: quirofano.color, fontSize: '0.65rem' }}>GENERAL</span>
+                <span className="nav-icon">{inicio === 'lista' ? '📋' : '⊞'}</span>
+                <span className="nav-label" style={{ color: quirofano.color, fontSize: '0.65rem' }}>
+                    {inicio === 'lista' ? 'LISTA' : 'GENERAL'}
+                </span>
             </button>
             <div style={{ display: 'flex', alignItems: 'center', paddingRight: '8px' }}>{menu}</div>
         </nav>

@@ -185,7 +185,7 @@ export function CambiarPassword({ onCerrar }) {
 }
 
 // ── Menú de cuenta (email, cambiar contraseña, institución, salir) ──────────────
-export function MenuCuenta({ email, rol, institucion, puedeCambiarInstitucion, onCambiarInstitucion, oscuro }) {
+export function MenuCuenta({ email, rol, institucion, puedeCambiarInstitucion, onCambiarInstitucion, oscuro, arriba }) {
     const [abierto,  setAbierto]  = useState(false);
     const [password, setPassword] = useState(false);
 
@@ -204,7 +204,7 @@ export function MenuCuenta({ email, rol, institucion, puedeCambiarInstitucion, o
             {abierto && (
                 <>
                     <div onClick={() => setAbierto(false)} style={{ position: 'fixed', inset: 0, zIndex: 10002 }} />
-                    <div style={{ position: 'absolute', right: 0, bottom: oscuro ? 'auto' : '110%', top: oscuro ? '110%' : 'auto',
+                    <div style={{ position: 'absolute', right: 0, bottom: arriba ? '110%' : 'auto', top: arriba ? 'auto' : '110%',
                                   zIndex: 10003, background: 'white', borderRadius: '10px', minWidth: '240px',
                                   boxShadow: '0 10px 30px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
                         <div style={{ padding: '10px 14px', color: '#475569', fontSize: '0.85rem' }}>

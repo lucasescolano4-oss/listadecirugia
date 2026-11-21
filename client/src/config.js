@@ -36,13 +36,16 @@ const UI = {
     },
     hze: {
         columnas: ['HORA', 'NOMBRE Y APELLIDO', 'DNI', 'DIAGNOSTICO', 'TELEFONO', 'CIRUGIA', 'CIRUJANO', 'OBSERVACIONES'],
+        // Orden de las columnas al pegar filas sin encabezado
+        pegado:   ['HORA', 'QUIROFANO', 'NOMBRE Y APELLIDO', 'DNI', 'DIAGNOSTICO', 'TELEFONO', 'CIRUGIA', 'CIRUJANO', 'OBSERVACIONES'],
         pantalla: { grande: ['CIRUGIA'], media: ['DIAGNOSTICO', 'CIRUJANO'], chica: ['OBSERVACIONES'] },
         resumen:  ['CIRUGIA', 'CIRUJANO']
     }
 };
 
 export function uiDe(institucionId) {
-    return UI[institucionId] || UI.hze;
+    const ui = UI[institucionId] || UI.hze;
+    return { ...ui, pegado: ui.pegado || ui.columnas };
 }
 
 export function quirofanosDe(institucion) {
