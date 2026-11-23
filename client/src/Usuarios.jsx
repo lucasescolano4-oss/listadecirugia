@@ -28,12 +28,31 @@ function Usuarios({ institucion, miId, onCerrar }) {
     const [email,   setEmail]   = useState('');
     const [rol,     setRol]     = useState('operador');
     const [ocupado, setOcupado] = useState(false);
+    const [solicitudes, setSolicitudes] = useState([]);
+    const [rolSolicitud, setRolSolicitud] = useState({});   // user_id → rol elegido para aprobar
 
     const cargar = useCallback(async () => {
-        const { data, error: err } = await supabase.rpc('qx_usuarios', { p_institucion: institucion.id });
-        if (err) setError('No se pudieron cargar los usuarios: ' + err.message);
-        else { setError(''); setLista(data); }
+        const [usuarios, pedidos] = await Promise.all([
+            supabase.rpc('qx_usuarios', { p_institucion: institucion.id }),
+            supabase.rpc('qx_solicitudes_pendientes')
+        ]);
+        if (usuarios.error) setError('No se pudieron cargar los usuarios: ' + usuarios.error.message);
+        else { setError(''); setLista(usuarios.data); }
+        setSolicitudes(pedidos.data || []);
     }, [institucion.id]);
+
+    const aprobar = (s) => {
+        const r = rolSolicitud[s.user_id] || 'operador';
+        accion(
+            () => supabase.rpc('qx_aprobar_solicitud', { p_user: s.user_id, p_institucion: institucion.id, p_rol: r }),
+            `✓ ${s.email} ahora tiene acceso a ${institucion.nombre} como ${nombreRol(r)}.`
+        );
+    };
+
+    const rechazar = (s) => {
+        if (!window.confirm(`¿Rechazar la solicitud de ${s.email}?`)) return;
+        accion(() => supabase.rpc('qx_rechazar_solicitud', { p_user: s.user_id }), `✓ Solicitud de ${s.email} rechazada.`);
+    };
 
     useEffect(() => {
         // cargar() solo cambia el estado cuando llega la respuesta
@@ -113,6 +132,33 @@ function Usuarios({ institucion, miId, onCerrar }) {
 
                 {lista === null && !error && <p>Cargando…</p>}
 
+                {/* Solicitudes de acceso */}
+                {solicitudes.length > 0 && (
+                    <div style={{ border: '2px solid #f59e0b', borderRadius: '10px', padding: '4px 12px 8px', marginBottom: '1rem' }}>
+                        <h3 style={{ marginBottom: '4px' }}>🔔 Solicitudes de acceso ({solicitudes.length})</h3>
+                        {solicitudes.map(s => (
+                            <div key={s.user_id} style={fila}>
+                                <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                                    <div style={{ fontWeight: 700, wordBreak: 'break-all' }}>{s.nombre ? `${s.nombre} — ` : ''}{s.email}</div>
+                                    {s.mensaje && <div style={{ fontStyle: 'italic', color: '#334155' }}>“{s.mensaje}”</div>}
+                                    <small style={{ color: '#64748b' }}>
+                                        Pedido el {new Date(s.creado_en).toLocaleString('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                    </small>
+                                </div>
+                                <select value={rolSolicitud[s.user_id] || 'operador'} disabled={ocupado}
+                                        onChange={e => setRolSolicitud(prev => ({ ...prev, [s.user_id]: e.target.value }))} style={{ padding: '6px' }}>
+                                    {ROLES.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}
+                                </select>
+                                <button onClick={() => aprobar(s)} disabled={ocupado} style={boton('#16a34a', { padding: '6px 10px' })}>
+                                    Aprobar en {institucion.nombre}
+                                </button>
+                                <button onClick={() => rechazar(s)} disabled={ocupado} className="btn-cancel"
+                                        style={{ padding: '6px 10px', borderRadius: '8px', cursor: 'pointer' }}>Rechazar</button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
                 {/* Con acceso */}
                 {miembros.length > 0 && (
                     <>
@@ -151,8 +197,9 @@ function Usuarios({ institucion, miId, onCerrar }) {
                 )}
 
                 <p style={{ color: '#64748b', fontSize: '0.85rem' }}>
-                    La persona invitada necesita una cuenta con ese mismo email. Por ahora la cuenta se crea en Supabase
-                    (Authentication → Users); cuando activemos "Entrar con Google" alcanzará con que entre con su Gmail.
+                    Si el email es de Google (Gmail o cuentas de Google), alcanza con que la persona toque
+                    "Entrar con Google": la invitación se aplica sola. Si no lo es, hay que crearle la cuenta en
+                    Supabase (Authentication → Users) con ese mismo email.
                 </p>
 
                 <button onClick={onCerrar} style={boton('#475569', { width: '100%', padding: '12px' })}>CERRAR</button>

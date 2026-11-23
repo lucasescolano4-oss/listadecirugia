@@ -20,8 +20,17 @@ function App() {
     const [permisos, setPermisos] = useState({ userId: null, membresias: null, error: false });
     const [instId,   setInstId]   = useState(() => leer(localStorage, 'qx_institucion'));
 
+    // Si Google rechazó o se canceló el ingreso, vuelve con ?error_description=…
+    const [errorOAuth] = useState(() => new URLSearchParams(window.location.search).get('error_description'));
+
     useEffect(() => {
-        supabase.auth.getSession().then(({ data }) => setSession(data.session));
+        supabase.auth.getSession().then(({ data }) => {
+            setSession(data.session);
+            // getSession ya canjeó el ?code= de Google por la sesión: limpiar la dirección
+            if (/[?&](code|error)=/.test(window.location.search)) {
+                window.history.replaceState(null, '', window.location.pathname + window.location.hash);
+            }
+        });
         const { data: sub } = supabase.auth.onAuthStateChange((_evento, s) => setSession(s));
         return () => sub.subscription.unsubscribe();
     }, []);
@@ -53,7 +62,7 @@ function App() {
     if (session === undefined || (session && membresias === null)) {
         return <div style={{ minHeight: '100vh', background: '#0f172a' }} />;
     }
-    if (!session) return <Login />;
+    if (!session) return <Login errorInicial={errorOAuth} />;
     if (membresias.length === 0) return <SinAcceso email={session.user.email} error={errorPerm} />;
 
     // Con una sola institución entra directo; si tiene varias, elige

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 import Usuarios from './Usuarios';
 
@@ -36,11 +36,32 @@ function Titulo({ subtitulo }) {
 }
 
 // ── Inicio de sesión ────────────────────────────────────────────────────────────
-export function Login() {
+function LogoGoogle() {
+    return (
+        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/>
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+            <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/>
+        </svg>
+    );
+}
+
+export function Login({ errorInicial }) {
     const [email,    setEmail]    = useState('');
     const [password, setPassword] = useState('');
-    const [error,    setError]    = useState('');
+    const [error,    setError]    = useState(errorInicial ? 'No se pudo ingresar con Google: ' + errorInicial : '');
     const [enviando, setEnviando] = useState(false);
+
+    const conGoogle = async () => {
+        setError('');
+        const { error: err } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            // Vuelve a esta misma app; prompt=select_account deja elegir la cuenta de Google
+            options: { redirectTo: window.location.origin + '/', queryParams: { prompt: 'select_account' } }
+        });
+        if (err) setError('No se pudo iniciar con Google: ' + err.message);
+    };
 
     const entrar = async (e) => {
         e.preventDefault();
@@ -59,6 +80,16 @@ export function Login() {
         <div style={pantalla}>
             <Titulo subtitulo="Ingresá con tu cuenta" />
             <form onSubmit={entrar} style={{ ...tarjeta, display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <button type="button" onClick={conGoogle}
+                        style={{ ...boton, backgroundColor: 'white', color: '#1f2937', display: 'flex',
+                                 alignItems: 'center', justifyContent: 'center', gap: '10px' }}>
+                    <LogoGoogle /> Entrar con Google
+                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#64748b', fontSize: '0.8rem' }}>
+                    <span style={{ flex: 1, height: '1px', background: '#334155' }} />
+                    o con email y contraseña
+                    <span style={{ flex: 1, height: '1px', background: '#334155' }} />
+                </div>
                 <label style={{ fontSize: '0.85rem', fontWeight: 700 }}>
                     Email
                     <input type="email" autoComplete="username" required value={email}
@@ -74,7 +105,7 @@ export function Login() {
                     {enviando ? 'Ingresando…' : 'INGRESAR'}
                 </button>
                 <p style={{ color: '#64748b', fontSize: '0.8rem', margin: '4px 0 0', textAlign: 'center' }}>
-                    Las cuentas las crea el administrador del sistema.
+                    Para usar el sistema, un administrador tiene que habilitar tu email.
                 </p>
             </form>
         </div>
@@ -110,17 +141,47 @@ export function ElegirInstitucion({ membresias, onElegir }) {
 
 // ── Cuenta sin permisos asignados ───────────────────────────────────────────────
 export function SinAcceso({ email, error }) {
+    const [mensaje,   setMensaje]   = useState('');
+    const [pedida,    setPedida]    = useState(null);   // fecha de la solicitud, si ya la hizo
+    const [enviando,  setEnviando]  = useState(false);
+    const [errorPedido, setErrorPedido] = useState('');
+
+    useEffect(() => {
+        supabase.rpc('qx_mi_solicitud').then(({ data }) => setPedida(data || null));
+    }, []);
+
+    const pedir = async (e) => {
+        e.preventDefault();
+        setEnviando(true);
+        setErrorPedido('');
+        const { error: err } = await supabase.rpc('qx_solicitar_acceso', { p_mensaje: mensaje });
+        setEnviando(false);
+        if (err) setErrorPedido('No se pudo enviar: ' + err.message);
+        else setPedida(new Date().toISOString());
+    };
+
     return (
         <div style={pantalla}>
             <Titulo />
             <div style={{ ...tarjeta, textAlign: 'center' }}>
                 {error ? (
                     <p>No se pudieron cargar tus permisos. Revisá la conexión y recargá la página.</p>
-                ) : (
+                ) : pedida ? (
                     <>
-                        <p style={{ marginTop: 0 }}>Tu cuenta <strong>{email}</strong> todavía no tiene acceso a ninguna institución.</p>
-                        <p style={{ color: '#94a3b8', marginBottom: 0 }}>Pedile al administrador que te habilite.</p>
+                        <p style={{ marginTop: 0 }}>✓ Pediste acceso con <strong>{email}</strong>.</p>
+                        <p style={{ color: '#94a3b8' }}>Cuando un administrador lo apruebe, vas a poder entrar.</p>
+                        <button onClick={() => window.location.reload()} style={boton}>YA ME HABILITARON — ENTRAR</button>
                     </>
+                ) : (
+                    <form onSubmit={pedir} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        <p style={{ margin: 0 }}>Tu cuenta <strong>{email}</strong> todavía no tiene acceso.</p>
+                        <p style={{ color: '#94a3b8', margin: 0 }}>Podés pedírselo al administrador:</p>
+                        <textarea value={mensaje} onChange={e => setMensaje(e.target.value)} maxLength={300} rows={3}
+                                  placeholder="Ej.: Soy instrumentadora del HZE, quirófano 2"
+                                  style={{ ...input, resize: 'vertical' }} />
+                        {errorPedido && <div style={{ color: '#fca5a5' }}>{errorPedido}</div>}
+                        <button type="submit" disabled={enviando} style={boton}>{enviando ? 'Enviando…' : 'SOLICITAR ACCESO'}</button>
+                    </form>
                 )}
             </div>
             <BotonSalir />
@@ -190,7 +251,24 @@ export function MenuCuenta({ email, miId, rol, institucionObj, puedeCambiarInsti
     const [abierto,  setAbierto]  = useState(false);
     const [password, setPassword] = useState(false);
     const [usuarios, setUsuarios] = useState(false);
+    const [pedidos,  setPedidos]  = useState(0);   // solicitudes de acceso pendientes (solo admin)
     const institucion = institucionObj.nombre;
+    const esAdmin = rol === 'admin';
+
+    // Cada minuto revisa si alguien pidió acceso (y al cerrar el panel de usuarios)
+    useEffect(() => {
+        if (!esAdmin || usuarios) return;
+        const contar = () => supabase.rpc('qx_solicitudes_pendientes')
+            .then(({ data }) => setPedidos(data ? data.length : 0));
+        contar();
+        const t = setInterval(contar, 60 * 1000);
+        return () => clearInterval(t);
+    }, [esAdmin, usuarios]);
+
+    const globo = (n) => n > 0 && (
+        <span style={{ background: '#dc2626', color: 'white', borderRadius: '999px', padding: '0 7px',
+                       fontSize: '0.75rem', fontWeight: 800, marginLeft: '6px' }}>{n}</span>
+    );
 
     const item = {
         display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px', background: 'none',
@@ -202,7 +280,7 @@ export function MenuCuenta({ email, miId, rol, institucionObj, puedeCambiarInsti
             <button onClick={() => setAbierto(a => !a)} title="Cuenta"
                     style={{ background: 'none', border: `1px solid ${oscuro ? '#475569' : '#cbd5e1'}`, borderRadius: '999px',
                              padding: '4px 12px', cursor: 'pointer', color: oscuro ? '#e2e8f0' : '#0f172a', fontWeight: 600 }}>
-                👤 {institucion}
+                👤 {institucion}{globo(pedidos)}
             </button>
             {abierto && (
                 <>
@@ -217,8 +295,10 @@ export function MenuCuenta({ email, miId, rol, institucionObj, puedeCambiarInsti
                         {puedeCambiarInstitucion && (
                             <button style={item} onClick={() => { setAbierto(false); onCambiarInstitucion(); }}>🔁 Cambiar institución</button>
                         )}
-                        {rol === 'admin' && (
-                            <button style={item} onClick={() => { setAbierto(false); setUsuarios(true); }}>👥 Usuarios e invitaciones</button>
+                        {esAdmin && (
+                            <button style={item} onClick={() => { setAbierto(false); setUsuarios(true); }}>
+                                👥 Usuarios e invitaciones{globo(pedidos)}
+                            </button>
                         )}
                         <button style={item} onClick={() => { setAbierto(false); setPassword(true); }}>🔑 Cambiar contraseña</button>
                         <button style={{ ...item, color: '#dc2626' }} onClick={() => supabase.auth.signOut()}>⏻ Cerrar sesión</button>
