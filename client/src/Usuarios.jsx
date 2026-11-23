@@ -140,6 +140,14 @@ function Usuarios({ institucion, miId, onCerrar }) {
                             <div key={s.user_id} style={fila}>
                                 <div style={{ flex: '1 1 220px', minWidth: 0 }}>
                                     <div style={{ fontWeight: 700, wordBreak: 'break-all' }}>{s.nombre ? `${s.nombre} — ` : ''}{s.email}</div>
+                                    {s.verificado_google ? (
+                                        <small style={{ color: '#166534', fontWeight: 700 }}>✓ Email verificado por Google</small>
+                                    ) : (
+                                        <small style={{ color: '#b45309', fontWeight: 700 }}
+                                               title="Entró con email y contraseña: no está comprobado que el email sea suyo">
+                                            ⚠️ Email sin verificar — confirmá con la persona antes de aprobar
+                                        </small>
+                                    )}
                                     {s.mensaje && <div style={{ fontStyle: 'italic', color: '#334155' }}>“{s.mensaje}”</div>}
                                     <small style={{ color: '#64748b' }}>
                                         Pedido el {new Date(s.creado_en).toLocaleString('es-AR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
