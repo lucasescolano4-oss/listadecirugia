@@ -23,6 +23,11 @@ export const LABELS = {
     'APP':           'ANTECEDENTES (APP)'
 };
 
+// Equipo quirúrgico (HZE): se guarda en extra y se muestra junto en la columna virtual EQUIPO
+export const EQUIPO = ['ANESTESISTA', 'ENFERMERO', 'INSTRUMENTADOR', 'CIRCULANTE'];
+// Casillas sí/no: se guardan en extra como 'SI' (o no se guardan)
+export const CASILLAS = ['ARCO EN C'];
+
 export const label = (col) => LABELS[col] || col;
 
 const COLORES_QUIROFANO = ['#0ea5e9', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#ec4899'];
@@ -35,25 +40,43 @@ const UI = {
         resumen:  ['OJO', 'LIO']           // vista general e historial
     },
     hze: {
-        columnas: ['HORA', 'NOMBRE Y APELLIDO', 'DNI', 'DIAGNOSTICO', 'TELEFONO', 'CIRUGIA', 'CIRUJANO', 'OBSERVACIONES'],
+        // EQUIPO es una columna solo para mostrar (junta anestesista, enfermero, instrumentador y circulante)
+        columnas: ['HORA', 'NOMBRE Y APELLIDO', 'DNI', 'DIAGNOSTICO', 'TELEFONO', 'CIRUGIA', 'CIRUJANO', 'EQUIPO', 'ARCO EN C', 'OBSERVACIONES'],
+        // Campos del formulario del lápiz (agregar / editar)
+        formulario: ['HORA', 'NOMBRE Y APELLIDO', 'DNI', 'DIAGNOSTICO', 'TELEFONO', 'CIRUGIA', 'CIRUJANO',
+                     ...EQUIPO, 'ARCO EN C', 'OBSERVACIONES'],
         // Orden de las columnas al pegar filas sin encabezado
         pegado:   ['HORA', 'QUIROFANO', 'NOMBRE Y APELLIDO', 'DNI', 'DIAGNOSTICO', 'TELEFONO', 'CIRUGIA', 'CIRUJANO', 'OBSERVACIONES'],
-        pantalla: { grande: ['CIRUGIA'], media: ['DIAGNOSTICO', 'CIRUJANO'], chica: ['OBSERVACIONES'] },
-        resumen:  ['CIRUGIA', 'CIRUJANO']
+        pantalla: { grande: ['CIRUGIA'], media: ['DIAGNOSTICO', 'CIRUJANO'], chica: ['EQUIPO', 'OBSERVACIONES'] },
+        resumen:  ['CIRUGIA', 'CIRUJANO'],
+        // Avisos destacados en la pantalla del quirófano cuando la casilla está tildada
+        alertas:  ['ARCO EN C']
     }
 };
 
+// Columnas que no existen como dato propio (se calculan para mostrar)
+export const VIRTUALES = ['EQUIPO'];
+
 export function uiDe(institucionId) {
     const ui = UI[institucionId] || UI.hze;
-    return { ...ui, pegado: ui.pegado || ui.columnas };
+    return {
+        ...ui,
+        pegado:     ui.pegado || ui.columnas,
+        formulario: ui.formulario || ui.columnas,
+        alertas:    ui.alertas || []
+    };
 }
 
 export function quirofanosDe(institucion) {
-    return Array.from({ length: institucion.quirofanos }, (_, i) => ({
-        numero: i + 1,
-        nombre: `Quirófano ${i + 1}`,
-        color:  COLORES_QUIROFANO[i % COLORES_QUIROFANO.length]
-    }));
+    return Array.from({ length: institucion.quirofanos }, (_, i) => {
+        const propio = institucion.nombres_quirofanos?.[i];
+        return {
+            numero: i + 1,
+            nombre: propio || `Quirófano ${i + 1}`,
+            corto:  propio || `Q${i + 1}`,         // para selectores y avisos
+            color:  COLORES_QUIROFANO[i % COLORES_QUIROFANO.length]
+        };
+    });
 }
 
 // ── Encabezados ─────────────────────────────────────────────────────────────────
@@ -68,7 +91,11 @@ const HEADER_ALIASES = {
     'TEL': 'TELEFONO', 'CELULAR': 'TELEFONO',
     'DIAGNOSTICO': 'DIAGNOSTICO', 'CIRUGIA': 'CIRUGIA',
     'Nº': 'N°', 'NO': 'N°', 'NRO': 'N°', 'N': 'N°', 'NUMERO': 'N°',
-    'OBRA SOCIAL': 'OS'
+    'OBRA SOCIAL': 'OS',
+    'ANESTESIOLOGO': 'ANESTESISTA', 'ANESTESIOLOGA': 'ANESTESISTA', 'ANESTESIA': 'ANESTESISTA',
+    'ENFERMERA': 'ENFERMERO', 'ENFERMERIA': 'ENFERMERO',
+    'INSTRUMENTADORA': 'INSTRUMENTADOR', 'INSTRUMENTACION': 'INSTRUMENTADOR',
+    'ARCO C': 'ARCO EN C', 'ARCO': 'ARCO EN C'
 };
 
 export function normalizeHeader(h) {
@@ -100,13 +127,29 @@ export function parseHora(v) {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-export function parseQuirofano(v) {
-    const match = String(v ?? '').match(/\d+/);
+// Acepta "1" · "Q2" · "Q 3" · y nombres propios como "GASTRO" (si se pasan los quirófanos)
+export function parseQuirofano(v, quirofanos = []) {
+    const texto = quitarAcentos(String(v ?? '').toUpperCase()).replace(/\s+/g, '');
+    if (!texto) return null;
+    const conNombre = quirofanos.find(q => !/^Q\d+$/.test(q.corto) &&
+        texto.includes(quitarAcentos(q.corto.toUpperCase()).replace(/\s+/g, '')));
+    if (conNombre) return conNombre.numero;
+    const match = texto.match(/\d+/);
     return match ? Number(match[0]) : null;
 }
 
+// Casillas: valores del Excel que cuentan como "sí"
+const esSi = (v) => /^(SI|SÍ|S|X|✓|1|TRUE|VERDADERO)$/i.test(String(v).trim());
+
 // Valor de una columna para mostrar
 export function valor(row, col) {
+    if (col === 'EQUIPO') {
+        return EQUIPO
+            .filter(rol => row.extra?.[rol])
+            .map(rol => `${rol.charAt(0)}${rol.slice(1).toLowerCase()}: ${row.extra[rol]}`)
+            .join(' · ');
+    }
+    if (CASILLAS.includes(col)) return row.extra?.[col] ? '✓' : '';
     const field = BASE_FIELDS[col];
     if (field === 'hora') return row.hora ? row.hora.slice(0, 5) : '';
     if (field) return row[field] ?? '';
@@ -114,7 +157,7 @@ export function valor(row, col) {
 }
 
 // Convierte un paciente con claves de encabezado de Excel en una fila de qx_cirugias
-export function aFila(paciente, { institucion_id, fecha, quirofano }) {
+export function aFila(paciente, { institucion_id, fecha, quirofano, quirofanos = [], detectarArco = true }) {
     const fila = { institucion_id, fecha, quirofano, extra: {} };
     for (const [rawKey, rawVal] of Object.entries(paciente)) {
         if (rawKey.startsWith('_')) continue;
@@ -122,11 +165,15 @@ export function aFila(paciente, { institucion_id, fecha, quirofano }) {
         const val = typeof rawVal === 'string' ? rawVal.trim() : rawVal;
         if (val === '' || val === null || val === undefined) continue;
         const field = BASE_FIELDS[col];
+        if (VIRTUALES.includes(col))    continue;
         if (field === 'hora')           fila.hora = parseHora(val);
-        else if (field === 'quirofano') fila.quirofano = parseQuirofano(val) ?? quirofano;
+        else if (field === 'quirofano') fila.quirofano = parseQuirofano(val, quirofanos) ?? quirofano;
         else if (field)                 fila[field] = String(val);
+        else if (CASILLAS.includes(col)) { if (esSi(val)) fila.extra[col] = 'SI'; }
         else                            fila.extra[col] = String(val);
     }
+    // Al importar: si en observaciones dice "arco en C", se tilda la casilla
+    if (detectarArco && /\barco\s*(en\s*)?c\b/i.test(fila.observaciones || '')) fila.extra['ARCO EN C'] = 'SI';
     return fila;
 }
 

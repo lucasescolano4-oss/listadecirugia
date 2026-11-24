@@ -45,7 +45,7 @@ function App() {
             await supabase.rpc('qx_reclamar_invitaciones');
             const { data, error } = await supabase
                 .from('qx_miembros')
-                .select('rol, institucion:qx_instituciones(id, nombre, quirofanos, columnas_extra)')
+                .select('rol, institucion:qx_instituciones(id, nombre, quirofanos, columnas_extra, nombres_quirofanos)')
                 .eq('user_id', userId);
             const membresias = error ? [] : data
                 .filter(m => m.institucion)

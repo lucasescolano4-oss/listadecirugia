@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './supabase';
-import { aFila, valor, label, normalizeHeader, parseHora, BASE_FIELDS, fechaLarga } from './config';
+import { aFila, valor, label, normalizeHeader, parseHora, BASE_FIELDS, EQUIPO, CASILLAS, fechaLarga } from './config';
 import SelectorFecha from './SelectorFecha';
 
 // Convierte el texto copiado de Excel (filas separadas por salto de línea, celdas por tab)
@@ -47,6 +47,36 @@ function mensajeError(error) {
     return 'No se pudo guardar: ' + (error?.message || 'error desconocido');
 }
 
+// Columnas con formato propio en la tabla
+function estiloCelda(col) {
+    if (col === 'EQUIPO')    return { fontSize: '0.8rem', lineHeight: 1.3, minWidth: '160px' };
+    if (col === 'ARCO EN C') return { textAlign: 'center', fontWeight: 800, color: '#b45309' };
+    return undefined;
+}
+
+// Al imprimir solo se ve la lista por quirófano, en A4 apaisado
+const CSS_IMPRESION = `
+.impresion-dia { display: none; }
+@media print {
+    @page { size: A4 landscape; margin: 10mm; }
+    body * { visibility: hidden !important; }
+    .impresion-dia, .impresion-dia * { visibility: visible !important; }
+    .impresion-dia {
+        display: block !important; position: absolute; left: 0; top: 0; width: 100%;
+        background: white; color: black; font-family: Arial, sans-serif; font-size: 10pt;
+    }
+    .impresion-dia h1 { font-size: 15pt; margin: 0; }
+    .impresion-dia .impresion-fecha { margin: 2px 0 10px; text-transform: capitalize; }
+    .impresion-dia section { break-inside: avoid; margin-bottom: 12px; }
+    .impresion-dia h2 { font-size: 12pt; margin: 0 0 4px; padding: 4px 6px; background: #e2e8f0 !important;
+        -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .impresion-dia h2 span { font-weight: normal; }
+    .impresion-dia table { width: 100%; border-collapse: collapse; }
+    .impresion-dia th, .impresion-dia td { border: 1px solid #94a3b8; padding: 3px 5px; text-align: left; vertical-align: top; }
+    .impresion-dia th { font-size: 8.5pt; }
+}
+`;
+
 const btn = (bg) => ({
     padding: '8px 16px', fontWeight: 'bold', cursor: 'pointer', backgroundColor: bg,
     color: 'white', border: 'none', borderRadius: '8px'
@@ -66,7 +96,10 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
     const [toast,          setToast]          = useState(null);
     const toastTimer = useRef(null);
 
-    const columnasForm = ui.columnas;
+    const columnasForm = ui.formulario;
+    const nombreQ      = (n) => quirofanos.find(q => q.numero === n)?.nombre || `Quirófano ${n}`;
+    // En el formulario, las casillas valen 'SI' o ''; el resto, el texto que se muestra
+    const valorForm    = (r, c) => CASILLAS.includes(c) ? (r.extra?.[c] ? 'SI' : '') : String(valor(r, c));
     const tieneOjo     = ui.columnas.includes('OJO');
 
     // ── Aviso de resultado (✓ guardado / ⚠ error) ─────────────────────────────
@@ -156,7 +189,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
         if (previewValidas.length === 0) return;
         const base  = modo === 'reemplazar' ? 0 : Math.max(0, ...rows.map(r => r.orden + 1));
         const filas = previewValidas.map((p, i) => {
-            const fila = aFila(p, { institucion_id: institucion.id, fecha, quirofano: quirofano?.numero ?? null });
+            const fila = aFila(p, { institucion_id: institucion.id, fecha, quirofano: quirofano?.numero ?? null, quirofanos });
             return { ...fila, quirofano: quirofanoValido(fila.quirofano), orden: base + i };
         });
         const sinQ    = filas.filter(f => f.quirofano === null).length;
@@ -192,7 +225,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
 
     const abrirEditar = (r) => setForm({
         id: r.id,
-        valores: { ...Object.fromEntries(columnasForm.map(c => [c, String(valor(r, c))])), FECHA: r.fecha, QUIROFANO: String(r.quirofano ?? '') }
+        valores: { ...Object.fromEntries(columnasForm.map(c => [c, valorForm(r, c)])), FECHA: r.fecha, QUIROFANO: String(r.quirofano ?? '') }
     });
 
     const guardarForm = async (e) => {
@@ -200,7 +233,9 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
         const { FECHA, QUIROFANO, ...campos } = form.valores;
         if (!String(campos['NOMBRE Y APELLIDO'] || '').trim()) return alert('El nombre y apellido es obligatorio.');
 
-        const fila = aFila({ ...campos, QUIROFANO }, { institucion_id: institucion.id, fecha: FECHA, quirofano: null });
+        const fila = aFila({ ...campos, QUIROFANO }, {
+            institucion_id: institucion.id, fecha: FECHA, quirofano: null, quirofanos, detectarArco: false
+        });
         fila.quirofano = quirofanoValido(fila.quirofano);
         let ok;
         if (form.id) {
@@ -237,7 +272,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
     // Asignar quirófano rápido (sección "Sin quirófano")
     const asignarQuirofano = (r, n) => {
         if (!n) return;
-        run(`${r.nombre} → Quirófano ${n}`, () => supabase.from('qx_cirugias').update({ quirofano: Number(n) }).eq('id', r.id));
+        run(`${r.nombre} → ${nombreQ(Number(n))}`, () => supabase.from('qx_cirugias').update({ quirofano: Number(n) }).eq('id', r.id));
     };
 
     // ── Proyectar ─────────────────────────────────────────────────────────────
@@ -255,7 +290,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
 
     const sendToScreen = (r) => {
         setPendingPatient(null);
-        run(`En pantalla de Q${r.quirofano}: ${r.nombre}`, () => supabase.rpc('qx_proyectar', { p_id: r.id }));
+        run(`En pantalla de ${nombreQ(r.quirofano)}: ${r.nombre}`, () => supabase.rpc('qx_proyectar', { p_id: r.id }));
     };
 
     const handleFinalizeCurrent = () => {
@@ -297,7 +332,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                                     <select value="" onChange={e => asignarQuirofano(r, e.target.value)}
                                             style={{ padding: '5px', fontWeight: 700, borderColor: '#d97706' }}>
                                         <option value="">Asignar Q…</option>
-                                        {quirofanos.map(q => <option key={q.numero} value={q.numero}>Q{q.numero}</option>)}
+                                        {quirofanos.map(q => <option key={q.numero} value={q.numero}>{q.corto}</option>)}
                                     </select>
                                 ) : puedeOperar ? (
                                     <button onClick={e => { e.stopPropagation(); projectPatient(r); }}>PROYECTAR</button>
@@ -316,7 +351,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                                         </select>
                                     </td>
                                 ) : (
-                                    <td key={c}>{valor(r, c)}</td>
+                                    <td key={c} style={estiloCelda(c)}>{valor(r, c)}</td>
                                 )
                             ))}
                             {puedeEditar && (
@@ -349,9 +384,45 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
 
     const sinQuirofano = lista.filter(r => !asignado(r));
 
+    // ── Imprimir / guardar como PDF (solo las listas repartidas por quirófano) ─
+    const sinAsignarDia = rows.filter(r => !asignado(r)).length;
+    const imprimir = () => {
+        if (sinAsignarDia > 0 && !window.confirm(
+            `Hay ${sinAsignarDia} paciente(s) sin quirófano asignado: no van a salir en la impresión.\n\n¿Imprimir igual?`
+        )) return;
+        window.print();
+    };
+
+    const impresion = modoDia && (
+        <div className="impresion-dia">
+            <style>{CSS_IMPRESION}</style>
+            <h1>Programación de quirófano — {institucion.nombre}</h1>
+            <p className="impresion-fecha">{fechaLarga(fecha)}</p>
+            {quirofanos.map(q => {
+                const filasQ = rows.filter(r => r.quirofano === q.numero);
+                if (filasQ.length === 0) return null;
+                return (
+                    <section key={q.numero}>
+                        <h2>{q.nombre.toUpperCase()} <span>({filasQ.length})</span></h2>
+                        <table>
+                            <thead><tr>{ui.columnas.map(c => <th key={c}>{label(c)}</th>)}</tr></thead>
+                            <tbody>
+                                {filasQ.map(r => (
+                                    <tr key={r.id}>{ui.columnas.map(c => <td key={c} style={estiloCelda(c)}>{valor(r, c)}</td>)}</tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </section>
+                );
+            })}
+            {quirofanos.every(q => !rows.some(r => r.quirofano === q.numero)) && <p>No hay pacientes asignados a quirófanos este día.</p>}
+        </div>
+    );
+
     // ── Render ────────────────────────────────────────────────────────────────
     return (
         <div className="reception-container">
+            {impresion}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '1rem' }}>
                 {encabezado || <h1 style={{ margin: 0 }}>{modoDia ? `Lista del día — ${institucion.nombre}` : `Recepción — ${quirofano.nombre}`}</h1>}
                 {puedeEditar && rows.length > 0 && (
@@ -361,8 +432,13 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                 )}
             </div>
 
-            <div style={{ marginBottom: '1rem' }}>
+            <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                 <SelectorFecha fecha={fecha} setFecha={setFecha} />
+                {modoDia && rows.length > 0 && (
+                    <button onClick={imprimir} style={btn('#475569')} title="Abre la impresión: elegí 'Guardar como PDF' para obtener el archivo">
+                        🖨️ IMPRIMIR / PDF
+                    </button>
+                )}
             </div>
 
             {puedeEditar ? (
@@ -541,10 +617,24 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                                         control = (
                                             <select value={val} onChange={e => set(e.target.value)} style={estilo}>
                                                 <option value="">Sin asignar</option>
-                                                {Array.from({ length: institucion.quirofanos }, (_, i) => (
-                                                    <option key={i} value={String(i + 1)}>Quirófano {i + 1}</option>
+                                                {quirofanos.map(q => (
+                                                    <option key={q.numero} value={String(q.numero)}>{q.nombre}</option>
                                                 ))}
                                             </select>
+                                        );
+                                    } else if (CASILLAS.includes(field)) {
+                                        // Casilla sí/no: se dibuja en línea, ocupando todo el ancho
+                                        return (
+                                            <label key={field} style={{
+                                                gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '10px',
+                                                fontWeight: 'bold', fontSize: '0.95rem', cursor: 'pointer',
+                                                background: val ? '#fef3c7' : '#f1f5f9', padding: '10px 12px', borderRadius: '8px',
+                                                border: `1px solid ${val ? '#f59e0b' : '#cbd5e1'}`
+                                            }}>
+                                                <input type="checkbox" checked={!!val} onChange={e => set(e.target.checked ? 'SI' : '')}
+                                                       style={{ width: '22px', height: '22px' }} />
+                                                Necesita {label(field)}
+                                            </label>
                                         );
                                     } else if (field === 'OJO') {
                                         control = (
@@ -559,7 +649,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                                                          onChange={e => set(e.target.value)} style={estilo}
                                                          autoFocus={!form.id && field === 'NOMBRE Y APELLIDO'} />;
                                     }
-                                    return (
+                                    const campo = (
                                         <label key={field} style={{
                                             display: 'flex', flexDirection: 'column', gap: '4px', fontWeight: 'bold', fontSize: '0.85rem',
                                             gridColumn: largo ? '1 / -1' : undefined
@@ -568,6 +658,19 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                                             {control}
                                         </label>
                                     );
+                                    // Título antes del primer integrante del equipo
+                                    if (field === EQUIPO[0]) {
+                                        return (
+                                            <React.Fragment key={field}>
+                                                <div style={{ gridColumn: '1 / -1', borderTop: '1px solid #e2e8f0', paddingTop: '10px',
+                                                              fontWeight: 800, color: '#0f172a' }}>
+                                                    👥 Equipo quirúrgico
+                                                </div>
+                                                {campo}
+                                            </React.Fragment>
+                                        );
+                                    }
+                                    return campo;
                                 })}
                             </div>
                             <div style={{ display: 'flex', gap: '12px', marginTop: '1.5rem', flexWrap: 'wrap' }}>
@@ -592,7 +695,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                 <div className="modal-overlay">
                     <div className="modal-content">
                         <h2>⚠️ Cirugía en curso</h2>
-                        <p>En la pantalla de Quirófano {pendingPatient.quirofano} está <strong>{activaDe(pendingPatient.quirofano)?.nombre}</strong>.</p>
+                        <p>En la pantalla de {nombreQ(pendingPatient.quirofano)} está <strong>{activaDe(pendingPatient.quirofano)?.nombre}</strong>.</p>
                         <p>¿Qué desea hacer?</p>
                         <div className="modal-actions">
                             <button className="btn-finalize" onClick={handleFinalizeCurrent}>

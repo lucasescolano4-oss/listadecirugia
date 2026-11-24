@@ -64,6 +64,15 @@ function SurgeryView({ institucion, ui, quirofano, activa, puedeOperar, recargar
             {/* SECCIÓN SUPERIOR: nombre y datos principales */}
             <div className="section-large">
                 <div className="main-name">{activa.nombre}</div>
+                {ui.alertas.filter(col => activa.extra?.[col]).map(col => (
+                    <div key={col} style={{
+                        display: 'inline-block', background: '#f59e0b', color: '#111827', fontWeight: 900,
+                        fontSize: 'clamp(1.2rem, 3vw, 2.2rem)', padding: '4px 18px', borderRadius: '10px',
+                        letterSpacing: '0.05em', margin: '6px 0'
+                    }}>
+                        ⚠️ {label(col)}
+                    </div>
+                ))}
                 <div className="sub-large-container">
                     {ui.pantalla.grande.map((col, i) => (
                         <div className="data-item" key={col}>
