@@ -47,6 +47,25 @@ function mensajeError(error) {
     return 'No se pudo guardar: ' + (error?.message || 'error desconocido');
 }
 
+// Valores vacíos del formulario fijo (FECHA null = la fecha que se está mirando)
+const panelVacio = (columnas) => ({ ...Object.fromEntries(columnas.map(c => [c, ''])), FECHA: null, QUIROFANO: '' });
+
+// Lista del día con formulario fijo a la izquierda (en pantallas angostas va arriba)
+const CSS_PANEL = `
+.lista-con-panel { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 20px; align-items: start; }
+.panel-agregar {
+    position: sticky; top: 10px; max-height: calc(100vh - 20px); overflow-y: auto;
+    background: white; border: 2px solid #0ea5e9; border-radius: 12px; padding: 14px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+}
+.panel-agregar summary { font-weight: 800; font-size: 1.1rem; cursor: pointer; list-style: none; }
+.panel-agregar summary::-webkit-details-marker { display: none; }
+@media (max-width: 1000px) {
+    .lista-con-panel { grid-template-columns: 1fr; }
+    .panel-agregar { position: static; max-height: none; }
+}
+`;
+
 // Columnas con formato propio en la tabla
 function estiloCelda(col) {
     if (col === 'EQUIPO')    return { fontSize: '0.8rem', lineHeight: 1.3, minWidth: '160px' };
@@ -94,6 +113,8 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
     const [form,           setForm]           = useState(null);   // { id?, valores }
     const [preview,        setPreview]        = useState(null);   // { rows, origen } pegado o Excel
     const [toast,          setToast]          = useState(null);
+    const [panel,          setPanel]          = useState(() => panelVacio(ui.formulario));   // formulario fijo
+    const [panelKey,       setPanelKey]       = useState(0);
     const toastTimer = useRef(null);
 
     const columnasForm = ui.formulario;
@@ -228,19 +249,22 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
         valores: { ...Object.fromEntries(columnasForm.map(c => [c, valorForm(r, c)])), FECHA: r.fecha, QUIROFANO: String(r.quirofano ?? '') }
     });
 
-    const guardarForm = async (e) => {
-        e.preventDefault();
-        const { FECHA, QUIROFANO, ...campos } = form.valores;
-        if (!String(campos['NOMBRE Y APELLIDO'] || '').trim()) return alert('El nombre y apellido es obligatorio.');
+    // Guarda una cirugía nueva (sin id) o los cambios de una existente. Devuelve true si anduvo.
+    const guardarValores = async (valores, id) => {
+        const { FECHA, QUIROFANO, ...campos } = valores;
+        if (!String(campos['NOMBRE Y APELLIDO'] || '').trim()) {
+            alert('El nombre y apellido es obligatorio.');
+            return false;
+        }
 
         const fila = aFila({ ...campos, QUIROFANO }, {
             institucion_id: institucion.id, fecha: FECHA, quirofano: null, quirofanos, detectarArco: false
         });
         fila.quirofano = quirofanoValido(fila.quirofano);
         let ok;
-        if (form.id) {
+        if (id) {
             // Al editar, un campo vacío tiene que borrar el valor anterior
-            const original = rows.find(r => r.id === form.id);
+            const original = rows.find(r => r.id === id);
             const cambios  = { fecha: FECHA, quirofano: fila.quirofano, extra: { ...(original?.extra || {}) } };
             columnasForm.forEach(col => {
                 const campo = BASE_FIELDS[col];
@@ -249,13 +273,31 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
             });
             Object.assign(cambios.extra, fila.extra);
             cambios.nombre = fila.nombre;
-            ok = await run('Cambios guardados', () => supabase.from('qx_cirugias').update(cambios).eq('id', form.id));
+            ok = await run('Cambios guardados', () => supabase.from('qx_cirugias').update(cambios).eq('id', id));
         } else {
             const orden = Math.max(0, ...rows.map(r => r.orden + 1));
-            ok = await run('Paciente agregado', () => supabase.from('qx_cirugias').insert({ ...fila, orden }));
+            ok = await run(`${fila.nombre} agregado/a` + (fila.quirofano ? ` en ${nombreQ(fila.quirofano)}` : ' (sin quirófano)'),
+                () => supabase.from('qx_cirugias').insert({ ...fila, orden }));
         }
-        // Si falla, el formulario queda abierto para no perder lo escrito
-        if (ok) setForm(null);
+        return ok;
+    };
+
+    // Modal del lápiz / agregar: si falla, queda abierto para no perder lo escrito
+    const guardarForm = async (e) => {
+        e.preventDefault();
+        if (await guardarValores(form.valores, form.id)) setForm(null);
+    };
+
+    // ── Formulario fijo "Agregar paciente" (Lista del día) ────────────────────
+    // FECHA en null = usar la fecha que se está mirando en la lista
+    const conPanel = modoDia && puedeEditar;
+    const valoresPanel = { ...panel, FECHA: panel.FECHA ?? fecha };
+    const guardarPanel = async (e) => {
+        e.preventDefault();
+        if (await guardarValores(valoresPanel, null)) {
+            setPanel(panelVacio(columnasForm));
+            setPanelKey(k => k + 1);   // vuelve a montar el formulario: el foco queda en el nombre
+        }
     };
 
     const borrar = async () => {
@@ -298,6 +340,97 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
         setPendingPatient(null);
         run('Cirugía finalizada', () => supabase.rpc('qx_finalizar', { p_institucion: institucion.id, p_quirofano: n }));
     };
+
+    // ── Campos del formulario (lápiz y formulario fijo) ───────────────────────
+    const camposFormulario = (valores, setCampo, { autoFocusNombre = false, anchoMin = 160 } = {}) => (
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fit, minmax(${anchoMin}px, 1fr))`, gap: '12px' }}>
+            {['FECHA', 'QUIROFANO', ...columnasForm].map(field => {
+                const set   = (v) => setCampo(field, v);
+                const val   = valores[field] ?? '';
+                const largo = ['NOMBRE Y APELLIDO', 'DIAGNOSTICO', 'CIRUGIA', 'OBSERVACIONES', 'APP'].includes(field);
+                const estilo = { padding: '8px', fontSize: '16px', minWidth: 0 };
+                let control;
+                if (field === 'FECHA') {
+                    control = <input type="date" required value={val} onChange={e => set(e.target.value)} style={estilo} />;
+                } else if (field === 'QUIROFANO') {
+                    control = (
+                        <select value={val} onChange={e => set(e.target.value)} style={estilo}>
+                            <option value="">Sin asignar</option>
+                            {quirofanos.map(q => <option key={q.numero} value={String(q.numero)}>{q.nombre}</option>)}
+                        </select>
+                    );
+                } else if (CASILLAS.includes(field)) {
+                    // Casilla sí/no: se dibuja en línea, ocupando todo el ancho
+                    return (
+                        <label key={field} style={{
+                            gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '10px',
+                            fontWeight: 'bold', fontSize: '0.95rem', cursor: 'pointer',
+                            background: val ? '#fef3c7' : '#f1f5f9', padding: '10px 12px', borderRadius: '8px',
+                            border: `1px solid ${val ? '#f59e0b' : '#cbd5e1'}`
+                        }}>
+                            <input type="checkbox" checked={!!val} onChange={e => set(e.target.checked ? 'SI' : '')}
+                                   style={{ width: '22px', height: '22px' }} />
+                            Necesita {label(field)}
+                        </label>
+                    );
+                } else if (field === 'OJO') {
+                    control = (
+                        <select value={String(val).toUpperCase()} onChange={e => set(e.target.value)} style={estilo}>
+                            <option value="">ELEGIR</option>
+                            <option value="DERECHO">DERECHO</option>
+                            <option value="IZQUIERDO">IZQUIERDO</option>
+                        </select>
+                    );
+                } else {
+                    control = <input type={field === 'HORA' ? 'time' : 'text'} value={val}
+                                     onChange={e => set(e.target.value)} style={estilo}
+                                     autoFocus={autoFocusNombre && field === 'NOMBRE Y APELLIDO'} />;
+                }
+                const campo = (
+                    <label key={field} style={{
+                        display: 'flex', flexDirection: 'column', gap: '4px', fontWeight: 'bold', fontSize: '0.85rem',
+                        gridColumn: largo ? '1 / -1' : undefined, minWidth: 0
+                    }}>
+                        {label(field)}{field === 'NOMBRE Y APELLIDO' && ' *'}
+                        {control}
+                    </label>
+                );
+                // Título antes del primer integrante del equipo
+                if (field === EQUIPO[0]) {
+                    return (
+                        <React.Fragment key={field}>
+                            <div style={{ gridColumn: '1 / -1', borderTop: '1px solid #e2e8f0', paddingTop: '10px',
+                                          fontWeight: 800, color: '#0f172a' }}>
+                                👥 Equipo quirúrgico
+                            </div>
+                            {campo}
+                        </React.Fragment>
+                    );
+                }
+                return campo;
+            })}
+        </div>
+    );
+
+    // Formulario fijo de la Lista del día (plegable en pantallas angostas)
+    const panelAgregar = conPanel && (
+        <aside className="panel-agregar">
+            <style>{CSS_PANEL}</style>
+            <details open={typeof window === 'undefined' || window.innerWidth > 1000}>
+                <summary>➕ Agregar paciente</summary>
+                <form key={panelKey} onSubmit={guardarPanel} style={{ marginTop: '12px' }}>
+                    {camposFormulario(valoresPanel,
+                        (campo, v) => setPanel(p => ({ ...p, [campo]: v })),
+                        { autoFocusNombre: panelKey > 0, anchoMin: 130 })}
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+                        <button type="submit" style={{ ...btn('#22c55e'), flex: 2, padding: '12px', fontSize: '1rem' }}>GUARDAR</button>
+                        <button type="button" onClick={() => setPanel(panelVacio(columnasForm))} className="btn-cancel"
+                                style={{ flex: 1, padding: '12px', borderRadius: '8px', cursor: 'pointer' }}>LIMPIAR</button>
+                    </div>
+                </form>
+            </details>
+        </aside>
+    );
 
     // ── Tabla ─────────────────────────────────────────────────────────────────
     const renderTabla = (filas) => (
@@ -421,7 +554,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
 
     // ── Render ────────────────────────────────────────────────────────────────
     return (
-        <div className="reception-container">
+        <div className="reception-container" style={conPanel ? { maxWidth: '1900px' } : undefined}>
             {impresion}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '1rem' }}>
                 {encabezado || <h1 style={{ margin: 0 }}>{modoDia ? `Lista del día — ${institucion.nombre}` : `Recepción — ${quirofano.nombre}`}</h1>}
@@ -431,6 +564,10 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                     </button>
                 )}
             </div>
+
+            <div className={conPanel ? 'lista-con-panel' : undefined}>
+            {panelAgregar}
+            <div style={{ minWidth: 0 }}>
 
             <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                 <SelectorFecha fecha={fecha} setFecha={setFecha} />
@@ -447,7 +584,7 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                         <strong>Cargar Lista (Excel): </strong>
                         <input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} />
                     </label>
-                    <button onClick={abrirNuevo} style={btn('#0ea5e9')}>➕ AGREGAR PACIENTE</button>
+                    {!conPanel && <button onClick={abrirNuevo} style={btn('#0ea5e9')}>➕ AGREGAR PACIENTE</button>}
                     <button onClick={() => setPreview({ rows: [], origen: 'pegado' })} style={btn('#16a34a')}>📋 PEGAR DESDE EXCEL</button>
                     {rows.length > 0 && <span>{pendientes} pendientes · {rows.length} en total</span>}
                 </div>
@@ -511,6 +648,8 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
             ) : (
                 lista.length > 0 && <div className="table-container">{renderTabla(lista)}</div>
             )}
+            </div>
+            </div>
 
             {/* Aviso de resultado de la última acción */}
             {toast && (
@@ -604,75 +743,11 @@ function ReceptionView({ institucion, ui, quirofano, quirofanos, rows, puedeEdit
                          style={{ maxWidth: '640px', width: '95%', maxHeight: '90vh', overflowY: 'auto', textAlign: 'left' }}>
                         <h2 style={{ marginTop: 0, textAlign: 'center' }}>{form.id ? '✏️ Editar cirugía' : '➕ Agregar paciente'}</h2>
                         <form onSubmit={guardarForm}>
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
-                                {['FECHA', 'QUIROFANO', ...columnasForm].map(field => {
-                                    const set = (v) => setForm(f => ({ ...f, valores: { ...f.valores, [field]: v } }));
-                                    const val = form.valores[field] ?? '';
-                                    const largo = ['NOMBRE Y APELLIDO', 'DIAGNOSTICO', 'CIRUGIA', 'OBSERVACIONES', 'APP'].includes(field);
-                                    const estilo = { padding: '8px', fontSize: '16px' };
-                                    let control;
-                                    if (field === 'FECHA') {
-                                        control = <input type="date" required value={val} onChange={e => set(e.target.value)} style={estilo} />;
-                                    } else if (field === 'QUIROFANO') {
-                                        control = (
-                                            <select value={val} onChange={e => set(e.target.value)} style={estilo}>
-                                                <option value="">Sin asignar</option>
-                                                {quirofanos.map(q => (
-                                                    <option key={q.numero} value={String(q.numero)}>{q.nombre}</option>
-                                                ))}
-                                            </select>
-                                        );
-                                    } else if (CASILLAS.includes(field)) {
-                                        // Casilla sí/no: se dibuja en línea, ocupando todo el ancho
-                                        return (
-                                            <label key={field} style={{
-                                                gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '10px',
-                                                fontWeight: 'bold', fontSize: '0.95rem', cursor: 'pointer',
-                                                background: val ? '#fef3c7' : '#f1f5f9', padding: '10px 12px', borderRadius: '8px',
-                                                border: `1px solid ${val ? '#f59e0b' : '#cbd5e1'}`
-                                            }}>
-                                                <input type="checkbox" checked={!!val} onChange={e => set(e.target.checked ? 'SI' : '')}
-                                                       style={{ width: '22px', height: '22px' }} />
-                                                Necesita {label(field)}
-                                            </label>
-                                        );
-                                    } else if (field === 'OJO') {
-                                        control = (
-                                            <select value={String(val).toUpperCase()} onChange={e => set(e.target.value)} style={estilo}>
-                                                <option value="">ELEGIR</option>
-                                                <option value="DERECHO">DERECHO</option>
-                                                <option value="IZQUIERDO">IZQUIERDO</option>
-                                            </select>
-                                        );
-                                    } else {
-                                        control = <input type={field === 'HORA' ? 'time' : 'text'} value={val}
-                                                         onChange={e => set(e.target.value)} style={estilo}
-                                                         autoFocus={!form.id && field === 'NOMBRE Y APELLIDO'} />;
-                                    }
-                                    const campo = (
-                                        <label key={field} style={{
-                                            display: 'flex', flexDirection: 'column', gap: '4px', fontWeight: 'bold', fontSize: '0.85rem',
-                                            gridColumn: largo ? '1 / -1' : undefined
-                                        }}>
-                                            {label(field)}{field === 'NOMBRE Y APELLIDO' && ' *'}
-                                            {control}
-                                        </label>
-                                    );
-                                    // Título antes del primer integrante del equipo
-                                    if (field === EQUIPO[0]) {
-                                        return (
-                                            <React.Fragment key={field}>
-                                                <div style={{ gridColumn: '1 / -1', borderTop: '1px solid #e2e8f0', paddingTop: '10px',
-                                                              fontWeight: 800, color: '#0f172a' }}>
-                                                    👥 Equipo quirúrgico
-                                                </div>
-                                                {campo}
-                                            </React.Fragment>
-                                        );
-                                    }
-                                    return campo;
-                                })}
-                            </div>
+                            {camposFormulario(
+                                form.valores,
+                                (campo, v) => setForm(f => ({ ...f, valores: { ...f.valores, [campo]: v } })),
+                                { autoFocusNombre: !form.id, anchoMin: 160 }
+                            )}
                             <div style={{ display: 'flex', gap: '12px', marginTop: '1.5rem', flexWrap: 'wrap' }}>
                                 <button type="submit" style={{ ...btn('#22c55e'), flex: 1, padding: '12px', fontSize: '1rem' }}>GUARDAR</button>
                                 {form.id && (
