@@ -217,14 +217,24 @@ function Espacio({ institucion, rol, email, miId, puedeCambiarInstitucion, onCam
                         } />
                     </Routes>
                 </main>
-                <Navegacion quirofano={quirofano} conectado={conectado} inicio={inicio}
-                            onInicio={() => setVista(inicio)} menu={menu(false, true)} />
+                <Navegacion quirofano={quirofano} conectado={conectado}
+                            onLista={() => setVista('lista')} onGeneral={() => setVista('general')}
+                            menu={menu(false, true)} />
             </div>
         </HashRouter>
     );
 }
 
-function Navegacion({ quirofano, conectado, inicio, onInicio, menu }) {
+function Navegacion({ quirofano, conectado, onLista, onGeneral, menu }) {
+    const botonSalida = (onClick, icono, texto, borde) => (
+        <button onClick={onClick} className="nav-item no-print"
+                style={{ background: 'none', border: 'none', cursor: 'pointer',
+                         ...(borde ? { borderLeft: `3px solid ${quirofano.color}`, paddingLeft: '8px' } : {}) }}>
+            <span className="nav-icon">{icono}</span>
+            <span className="nav-label" style={{ color: quirofano.color, fontSize: '0.65rem' }}>{texto}</span>
+        </button>
+    );
+
     return (
         <nav className="bottom-nav no-print">
             <div className={`connection-status ${conectado ? 'online' : 'offline'}`}
@@ -241,14 +251,8 @@ function Navegacion({ quirofano, conectado, inicio, onInicio, menu }) {
                 <span className="nav-icon">✅</span>
                 <span className="nav-label">FINALIZADO</span>
             </NavLink>
-            <button onClick={onInicio} className="nav-item no-print"
-                    style={{ background: 'none', border: 'none', cursor: 'pointer',
-                             borderLeft: `3px solid ${quirofano.color}`, paddingLeft: '8px' }}>
-                <span className="nav-icon">{inicio === 'lista' ? '📋' : '⊞'}</span>
-                <span className="nav-label" style={{ color: quirofano.color, fontSize: '0.65rem' }}>
-                    {inicio === 'lista' ? 'LISTA' : 'GENERAL'}
-                </span>
-            </button>
+            {botonSalida(onLista,   '📋', 'LISTA',   true)}
+            {botonSalida(onGeneral, '⊞',  'GENERAL', false)}
             <div style={{ display: 'flex', alignItems: 'center', paddingRight: '8px' }}>{menu}</div>
         </nav>
     );
